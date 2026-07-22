@@ -1,6 +1,7 @@
 import { definePlugin } from "emdash";
 import type { PluginContext } from "emdash";
 import { DEFAULT_SETTINGS } from "./types.js";
+import { settingsRoutes } from "./routes/settings.js";
 
 export function createPlugin() {
   return definePlugin({
@@ -32,7 +33,9 @@ export function createPlugin() {
         },
       },
     },
-    routes: {},
+    routes: {
+      ...settingsRoutes,
+    },
   });
 }
 
