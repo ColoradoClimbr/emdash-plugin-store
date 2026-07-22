@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { listSyncProducts, getSyncProduct, getShippingRates, createPrintfulOrder, getPrintfulOrder } from "../src/lib/printful.js";
+import { listSyncProducts, getSyncProduct, getShippingRates, createPrintfulOrder, getPrintfulOrder, PrintfulApiError } from "../src/lib/printful.js";
 import { makeCtx, mockFetch } from "./helpers.js";
 
 const settings = { printfulApiKey: "pf_test", printfulStoreId: "", stripeSecretKey: "", siteOrigin: "https://x.test" };
@@ -82,5 +82,50 @@ describe("printful client", () => {
     const ctx = makeCtx();
     const order = await getPrintfulOrder(ctx as never, settings, 555);
     expect(order).toEqual({ id: 555, status: "fulfilled" });
+  });
+
+  it("listSyncProducts rejects with PrintfulApiError on non-2xx response", async () => {
+    mockFetch({
+      printful: () => new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+    });
+    const ctx = makeCtx();
+    await expect(listSyncProducts(ctx as never, settings)).rejects.toBeInstanceOf(PrintfulApiError);
+    try {
+      await listSyncProducts(ctx as never, settings);
+      throw new Error("expected rejection");
+    } catch (err) {
+      expect((err as PrintfulApiError).status).toBe(401);
+    }
+  });
+
+  it("sends Authorization header (no store id)", async () => {
+    let capturedInit: RequestInit | undefined;
+    mockFetch({
+      printful: (_url, init) => {
+        capturedInit = init;
+        return new Response(JSON.stringify({ code: 200, result: [] }), { status: 200 });
+      },
+    });
+    const ctx = makeCtx();
+    await listSyncProducts(ctx as never, settings);
+    const sentHeaders = capturedInit?.headers as Record<string, string>;
+    expect(sentHeaders.Authorization).toBe("Bearer pf_test");
+    expect(sentHeaders["X-PF-Store-Id"]).toBeUndefined();
+  });
+
+  it("sends X-PF-Store-Id header when settings.printfulStoreId is set", async () => {
+    let capturedInit: RequestInit | undefined;
+    mockFetch({
+      printful: (_url, init) => {
+        capturedInit = init;
+        return new Response(JSON.stringify({ code: 200, result: [] }), { status: 200 });
+      },
+    });
+    const ctx = makeCtx();
+    const settingsWithStore = { ...settings, printfulStoreId: "store_123" };
+    await listSyncProducts(ctx as never, settingsWithStore);
+    const sentHeaders = capturedInit?.headers as Record<string, string>;
+    expect(sentHeaders.Authorization).toBe("Bearer pf_test");
+    expect(sentHeaders["X-PF-Store-Id"]).toBe("store_123");
   });
 });

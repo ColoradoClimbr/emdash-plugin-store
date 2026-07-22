@@ -22,10 +22,24 @@ async function pfFetch(ctx: PluginContext, settings: PluginSettings, path: strin
     ...init,
     headers: { ...headers(settings), ...(init?.headers as Record<string, string> | undefined) },
   });
-  const data = (await res.json()) as Record<string, unknown>;
+  let data: Record<string, unknown>;
+  try {
+    data = (await res.json()) as Record<string, unknown>;
+  } catch {
+    throw new PrintfulApiError("Printful request failed.", res.status);
+  }
   if (!res.ok) {
-    const message = (data.result as { message?: string } | undefined)?.message ?? data.error ?? "Printful request failed.";
-    throw new PrintfulApiError(String(message), res.status);
+    let message: string | undefined;
+    if (typeof data.result === "string") {
+      message = data.result;
+    } else if (data.result && typeof (data.result as { message?: unknown }).message === "string") {
+      message = (data.result as { message: string }).message;
+    } else if (typeof data.error === "string") {
+      message = data.error;
+    } else if (data.error && typeof (data.error as { message?: unknown }).message === "string") {
+      message = (data.error as { message: string }).message;
+    }
+    throw new PrintfulApiError(message ?? "Printful request failed.", res.status);
   }
   return data;
 }
