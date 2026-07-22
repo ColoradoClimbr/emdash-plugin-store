@@ -1,0 +1,26 @@
+{
+  "name": "emdash-plugin-store",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./sandbox": "./src/sandbox-entry.ts",
+    "./admin": "./src/admin.tsx"
+  },
+  "peerDependencies": {
+    "emdash": ">=0.16.0",
+    "react": "^19.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "@types/react": "^19.0.0",
+    "emdash": "latest",
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.5"
+  }
+}
