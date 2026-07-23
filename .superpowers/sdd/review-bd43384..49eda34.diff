@@ -1,0 +1,880 @@
+# Review package: bd43384..49eda34
+
+## Commits
+49eda34 fix(store): test per-session error isolation in orders/reconcile
+31ce9fc feat(store): add orders admin page with list, filter, and manual reconcile
+
+## Files changed
+ .superpowers/sdd/task-6-report.md | 153 ++++++++++++++++++++++++++++
+ src/admin.tsx                     |   3 +-
+ src/components/Orders.tsx         | 123 +++++++++++++++++++++++
+ src/routes/orders.ts              |  69 +++++++++++++
+ src/routes/store.ts               | 141 ++++++++++++++------------
+ src/sandbox-entry.ts              |   2 +
+ tests/helpers.ts                  |  21 +++-
+ tests/orders.test.ts              | 206 ++++++++++++++++++++++++++++++++++++++
+ 8 files changed, 650 insertions(+), 68 deletions(-)
+
+## Diff
+diff --git a/.superpowers/sdd/task-6-report.md b/.superpowers/sdd/task-6-report.md
+new file mode 100644
+index 0000000..faf9cd6
+--- /dev/null
++++ b/.superpowers/sdd/task-6-report.md
+@@ -0,0 +1,153 @@
++# Task 6 Report — Orders admin page (list, filter, manual reconcile)
++
++## Summary
++
++Implemented the orders admin page per the brief: refactored the shared
++fulfillment logic out of `checkout/confirm` into `fulfillCheckoutSession`,
++added two new admin-only routes (`orders/list`, `orders/reconcile`), an
++`Orders.tsx` admin page, and wired both into `admin.tsx` / `sandbox-entry.ts`.
++
++## Files changed
++
++- `src/routes/store.ts` — extracted `fulfillCheckoutSession` (exported);
++  `checkout/confirm`'s handler is now a thin wrapper: validate `sessionId`,
++  load settings, check configured, delegate.
++- `src/routes/orders.ts` (new) — `ordersRoutes`: `orders/list`,
++  `orders/reconcile`. No `public: true` flag, matching `settings.ts`'s
++  admin-only convention.
++- `src/components/Orders.tsx` (new) — status filter, table (created/email/
++  amount/status/Printful order id, `lastError` shown only on failed rows),
++  "Load more" (cursor-based append), "Reconcile now" (fixed `sinceHours: 24`,
++  shows a result summary, refreshes the list). Same `apiFetch`/
++  `parseApiResponse`/`API` base/inline-style conventions as `Settings.tsx`.
++- `src/admin.tsx` — registered `"/orders": Orders`.
++- `src/sandbox-entry.ts` — spread `ordersRoutes` into `routes:`.
++- `tests/helpers.ts` — `collection()`'s mock `query()` now supports
++  `orderBy` (single-field asc/desc sort) and cursor pagination (cursor =
++  stringified index offset into the filtered/sorted array), matching the
++  real API's `{ items, cursor, hasMore }` shape from
++  `emdash/skills/creating-plugins/references/storage.md`. Verified via
++  `node_modules/emdash/dist/types-BvB7gDOD.d.mts` (`QueryOptions`,
++  `PaginatedResult`) that this matches the real `RouteContext`/
++  `StorageCollection` types exactly.
++- `tests/orders.test.ts` (new) — see below.
++
++## Implementation notes / decisions
++
++- **Settings-check ordering change (intentional, per brief):** the old
++  `checkout/confirm` did the idempotency check *before* the
++  settings-configured check. The brief's refactor puts settings-load +
++  configured-check first in the thin wrapper, with idempotency now inside
++  `fulfillCheckoutSession`. This is a real (if narrow) behavior change for
++  the case "order already exists AND settings are unconfigured" — that case
++  now 400s instead of returning the existing order. No existing test
++  exercises that combination (`tests/store.test.ts`'s idempotency test uses
++  `configuredSettings` throughout), and the brief explicitly specifies this
++  new order, so I followed it rather than preserving the old ordering.
++- **`orders/reconcile` per-iteration error status:** the brief says a
++  defensive per-session `try/catch` should "record the session as errored".
++  I used `status: "error"` in the reconcile response for that branch,
++  distinct from the `OrderStatus` union's `"failed"` (which is
++  `fulfillCheckoutSession`'s own internally-caught Printful-failure state,
++  already persisted to storage). `"error"` here means something upstream of
++  that — e.g. `getCheckoutSession` itself throwing — never got persisted at
++  all. This distinction isn't tested (no test case reaches that branch; the
++  brief's three required cases are new/already/other-source, none of which
++  trigger it) but is called out here since it's a judgment call not spelled
++  out verbatim in the brief.
++- **Cursor semantics in the test double:** per the brief, `cursor` in the
++  mock `collection()` is a stringified array index offset into the
++  where-filtered + orderBy-sorted result set — good enough for testing
++  pagination behavior, not a claim about the real backend's cursor encoding.
++
++## TDD evidence
++
++1. Wrote `tests/orders.test.ts` and the `tests/helpers.ts` `query()`
++   extension first, targeting the not-yet-created `src/routes/orders.ts`.
++2. Ran `pnpm test -- orders` — failed for the expected reason:
++   `Error: Cannot find module '../src/routes/orders.js'`.
++3. Ran `pnpm test -- store` first (before writing orders.ts, right after the
++   `store.ts` refactor) to confirm the refactor alone didn't change
++   `checkout/confirm` behavior — 32/32 passed, no changes to that test file.
++4. Implemented `src/routes/orders.ts`.
++5. Ran `pnpm test -- orders` — 37/37 passed (6 test files, including the new
++   one).
++6. Ran full suite `pnpm test` — 37/37 passed, no regressions.
++7. Ran `pnpm run typecheck` — clean, no errors.
++
++## Test cases covered (`tests/orders.test.ts`)
++
++- `orders/list`: filters by `status`; rejects an invalid `status` value with
++  400; pagination — 5 seeded orders, `limit: 2` across three calls returns
++  2/2/1 items with correct `hasMore`/`cursor`, union of all pages covers all
++  5 unique ids with no duplicates or omissions.
++- `orders/reconcile`: mocks the Stripe `checkout/sessions` list endpoint
++  (used by `listRecentPaidSessions`) returning three sessions — one new
++  `"ebt-store"` session (asserts `createPrintfulOrder` is called exactly
++  once and it comes back `"fulfilled"`), one already-recorded `"ebt-store"`
++  session seeded via `ctx.storage.orders.put` beforehand (asserts `"already"`
++  and no additional Printful order call), and one `"donate"`-sourced session
++  (asserts it's excluded from both `checked` count and `results` entirely).
++  Also covers the "store isn't configured" 400 rejection.
++
++## Self-review
++
++- Compared `checkout/confirm`'s pre- and post-refactor logic line-by-line —
++  the body moved into `fulfillCheckoutSession` verbatim (same idempotency
++  check, same metadata parsing, same try/catch around Printful order
++  creation, same `OrderRecord` construction and `put`), confirmed by the
++  unmodified `tests/store.test.ts` suite passing unchanged.
++- Confirmed the real `emdash` package's `RouteContext`/`StorageCollection`/
++  `QueryOptions`/`PaginatedResult` types (via
++  `node_modules/emdash/dist/types-BvB7gDOD.d.mts`) match what the brief and
++  `storage.md` describe — no discrepancy found, so no `NEEDS_CONTEXT` was
++  warranted there.
++- `orders.ts` has no `public: true` flag on either route, matching
++  `settings.ts`'s admin-only convention exactly (grep confirms no other
++  route file omits it accidentally).
++- Ran `pnpm test`, `pnpm run typecheck` — both clean before committing.
++
++## Commit
++
++See commit SHA in the final status line of the task response (this report
++was written and `git add -f`'d alongside the implementation files in the
++same commit per the brief's Step 8, plus this report file added with
++`git add -f`).
++
++## Post-review fix: unproven error isolation in orders/reconcile (2026-07-23)
++
++**Finding:** The task review flagged that `orders/reconcile`'s per-session
++try/catch (the loop in `src/routes/orders.ts` that pushes
++`{ sessionId, status: "error" }` on a throw and continues) is a named
++safety requirement in the brief, but the existing reconcile tests only ever
++drove sessions through the resolve-without-throwing paths (fulfilled,
++already-processed, filtered-out by source). Nothing exercised the throw
++branch, so the isolation guarantee was correct by inspection but unproven
++by test.
++
++**Fix:** Added one test to the `orders/reconcile` describe block in
++`tests/orders.test.ts`: a batch of two `"ebt-store"` sessions where
++`cs_bad`'s individual `checkout/sessions/cs_bad` GET returns HTTP 500 (so
++`getCheckoutSession` throws a `StripeApiError` inside
++`fulfillCheckoutSession`, uncaught by that function, reaching the route's
++per-session try/catch), while `cs_existing` is pre-seeded in storage so it
++resolves via the `"already"` short-circuit without any further Stripe call.
++The route's `src/routes/orders.ts` handler was read again and left
++untouched — the try/catch was confirmed correct by inspection, matching
++the original review's finding.
++
++The test asserts:
++1. The `handler(...)` call itself resolves (not wrapped in
++   `expect(...).rejects`) — a throw here fails the test outright.
++2. `results.find(r => r.sessionId === "cs_bad").status === "error"`.
++3. `results.find(r => r.sessionId === "cs_existing").status === "already"`
++   — proving the loop actually continued past the failure rather than the
++   batch merely not crashing for an unrelated reason.
++
++**Evidence:**
++- `pnpm test -- orders` — 38 passed (6 test files), including the new case.
++- `pnpm test` (full suite) — 38 passed, up from 37 before this fix, no
++  regressions.
++- `pnpm run typecheck` — clean.
++
++Test-only change; `src/routes/orders.ts` was not modified.
+diff --git a/src/admin.tsx b/src/admin.tsx
+index d6f7883..76ab084 100644
+--- a/src/admin.tsx
++++ b/src/admin.tsx
+@@ -1,5 +1,6 @@
+ import type { PluginAdminExports } from "emdash";
+ import Settings from "./components/Settings.js";
++import Orders from "./components/Orders.js";
+ 
+-export const pages: PluginAdminExports["pages"] = { "/settings": Settings };
++export const pages: PluginAdminExports["pages"] = { "/settings": Settings, "/orders": Orders };
+ export const widgets: PluginAdminExports["widgets"] = {};
+diff --git a/src/components/Orders.tsx b/src/components/Orders.tsx
+new file mode 100644
+index 0000000..0e849f7
+--- /dev/null
++++ b/src/components/Orders.tsx
+@@ -0,0 +1,123 @@
++import React from "react";
++import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
++import type { OrderRecord, OrderStatus } from "../types.js";
++
++const API = "/_emdash/api/plugins/ebt-store";
++
++const STATUS_OPTIONS: { value: OrderStatus | ""; label: string }[] = [
++  { value: "", label: "All" },
++  { value: "paid_unfulfilled", label: "Paid Unfulfilled" },
++  { value: "fulfilled", label: "Fulfilled" },
++  { value: "failed", label: "Failed" },
++];
++
++type OrderRow = { id: string; data: OrderRecord };
++
++function formatAmount(amountCents: number, currency: string): string {
++  return new Intl.NumberFormat("en-US", { style: "currency", currency: currency.toUpperCase() }).format(amountCents / 100);
++}
++
++export default function Orders() {
++  const [status, setStatus] = React.useState<OrderStatus | "">("");
++  const [items, setItems] = React.useState<OrderRow[]>([]);
++  const [cursor, setCursor] = React.useState<string | undefined>(undefined);
++  const [hasMore, setHasMore] = React.useState(false);
++  const [message, setMessage] = React.useState("");
++  const [reconciling, setReconciling] = React.useState(false);
++
++  async function load(opts: { status: OrderStatus | ""; append?: boolean; cursor?: string }) {
++    const res = await apiFetch(`${API}/orders/list`, {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ status: opts.status || undefined, cursor: opts.cursor }),
++    });
++    const data = await parseApiResponse<{ items: OrderRow[]; cursor?: string; hasMore: boolean }>(res, "Failed to load orders");
++    setItems((prev) => (opts.append ? [...prev, ...data.items] : data.items));
++    setCursor(data.cursor);
++    setHasMore(data.hasMore);
++  }
++
++  React.useEffect(() => {
++    load({ status }).catch((err) => setMessage(err instanceof Error ? err.message : "Failed to load orders"));
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [status]);
++
++  async function onLoadMore() {
++    try {
++      await load({ status, append: true, cursor });
++    } catch (err) {
++      setMessage(err instanceof Error ? err.message : "Failed to load more orders");
++    }
++  }
++
++  async function onReconcile() {
++    setReconciling(true);
++    setMessage("Reconciling...");
++    try {
++      const res = await apiFetch(`${API}/orders/reconcile`, {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ sinceHours: 24 }),
++      });
++      const data = await parseApiResponse<{ checked: number; results: Array<{ sessionId: string; status: string }> }>(res, "Failed to reconcile orders");
++      const newlyFulfilled = data.results.filter((r) => r.status === "fulfilled").length;
++      setMessage(`Checked ${data.checked}, ${newlyFulfilled} newly fulfilled.`);
++      await load({ status });
++    } catch (err) {
++      setMessage(err instanceof Error ? err.message : "Failed to reconcile orders");
++    } finally {
++      setReconciling(false);
++    }
++  }
++
++  return (
++    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
++      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
++        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
++          Status
++          <select value={status} onChange={(e) => setStatus(e.target.value as OrderStatus | "")} style={{ padding: 8, border: "1px solid var(--kumo-border, #e5e7eb)" }}>
++            {STATUS_OPTIONS.map((opt) => (
++              <option key={opt.value} value={opt.value}>{opt.label}</option>
++            ))}
++          </select>
++        </label>
++        <button type="button" onClick={onReconcile} disabled={reconciling} style={{ alignSelf: "flex-end" }}>
++          {reconciling ? "Reconciling..." : "Reconcile now"}
++        </button>
++      </div>
++      <p role="status">{message}</p>
++      <table style={{ width: "100%", borderCollapse: "collapse" }}>
++        <thead>
++          <tr>
++            <th style={{ textAlign: "left", borderBottom: "1px solid var(--kumo-border, #e5e7eb)", padding: 8 }}>Created</th>
++            <th style={{ textAlign: "left", borderBottom: "1px solid var(--kumo-border, #e5e7eb)", padding: 8 }}>Email</th>
++            <th style={{ textAlign: "left", borderBottom: "1px solid var(--kumo-border, #e5e7eb)", padding: 8 }}>Amount</th>
++            <th style={{ textAlign: "left", borderBottom: "1px solid var(--kumo-border, #e5e7eb)", padding: 8 }}>Status</th>
++            <th style={{ textAlign: "left", borderBottom: "1px solid var(--kumo-border, #e5e7eb)", padding: 8 }}>Printful Order</th>
++          </tr>
++        </thead>
++        <tbody>
++          {items.map((row) => (
++            <React.Fragment key={row.id}>
++              <tr>
++                <td style={{ padding: 8 }}>{new Date(row.data.createdAt).toLocaleString()}</td>
++                <td style={{ padding: 8 }}>{row.data.email}</td>
++                <td style={{ padding: 8 }}>{formatAmount(row.data.amountCents, row.data.currency)}</td>
++                <td style={{ padding: 8 }}>{row.data.status}</td>
++                <td style={{ padding: 8 }}>{row.data.printfulOrderId ?? "—"}</td>
++              </tr>
++              {row.data.status === "failed" && row.data.lastError && (
++                <tr>
++                  <td colSpan={5} style={{ padding: "0 8px 8px", color: "var(--kumo-danger, #b91c1c)" }}>{row.data.lastError}</td>
++                </tr>
++              )}
++            </React.Fragment>
++          ))}
++        </tbody>
++      </table>
++      {hasMore && (
++        <button type="button" onClick={onLoadMore}>Load more</button>
++      )}
++    </div>
++  );
++}
+diff --git a/src/routes/orders.ts b/src/routes/orders.ts
+new file mode 100644
+index 0000000..cf260c5
+--- /dev/null
++++ b/src/routes/orders.ts
+@@ -0,0 +1,69 @@
++import { PluginRouteError } from "emdash";
++import type { RouteContext } from "emdash";
++import type { OrderStatus } from "../types.js";
++import { getSettings } from "../settings.js";
++import { listRecentPaidSessions } from "../lib/stripe.js";
++import { fulfillCheckoutSession } from "./store.js";
++
++const VALID_STATUSES: OrderStatus[] = ["paid_unfulfilled", "fulfilled", "failed"];
++const DEFAULT_LIST_LIMIT = 20;
++const MAX_LIST_LIMIT = 100;
++const DEFAULT_RECONCILE_HOURS = 24;
++const MAX_RECONCILE_HOURS = 24 * 30;
++
++export const ordersRoutes = {
++  "orders/list": {
++    handler: async (ctx: RouteContext) => {
++      const body = (ctx.input ?? {}) as { status?: string; cursor?: string; limit?: number };
++      let status: OrderStatus | undefined;
++      if (body.status !== undefined) {
++        if (!VALID_STATUSES.includes(body.status as OrderStatus)) {
++          throw PluginRouteError.badRequest("Invalid status.");
++        }
++        status = body.status as OrderStatus;
++      }
++      const limit = Math.min(Math.max(Number(body.limit) || DEFAULT_LIST_LIMIT, 1), MAX_LIST_LIMIT);
++
++      const result = await ctx.storage.orders.query({
++        where: status ? { status } : undefined,
++        orderBy: { createdAt: "desc" },
++        limit,
++        cursor: body.cursor,
++      });
++      return { items: result.items, cursor: result.cursor, hasMore: result.hasMore };
++    },
++  },
++
++  "orders/reconcile": {
++    handler: async (ctx: RouteContext) => {
++      const body = (ctx.input ?? {}) as { sinceHours?: number };
++      const sinceHours = Math.min(Math.max(Number(body.sinceHours) || DEFAULT_RECONCILE_HOURS, 1), MAX_RECONCILE_HOURS);
++
++      const settings = await getSettings(ctx);
++      if (!settings.printfulApiKey || !settings.stripeSecretKey) {
++        throw PluginRouteError.badRequest("Store isn't configured yet.");
++      }
++
++      const createdAfterUnix = Math.floor(Date.now() / 1000) - sinceHours * 3600;
++      const allSessions = await listRecentPaidSessions(ctx, settings, createdAfterUnix);
++      // The Stripe account may be shared with other plugins (e.g.
++      // emdash-plugin-petition's donations) — listRecentPaidSessions has no
++      // built-in filtering, so this must happen before anything else touches
++      // a session, or reconcile would try to Printful-fulfill someone else's
++      // payment.
++      const sessions = allSessions.filter((s) => s.metadata.source === "ebt-store");
++
++      const results: Array<{ sessionId: string; status: string }> = [];
++      for (const session of sessions) {
++        try {
++          const { status } = await fulfillCheckoutSession(ctx, settings, session.id);
++          results.push({ sessionId: session.id, status });
++        } catch {
++          // One bad session must not abort the batch — record it and move on.
++          results.push({ sessionId: session.id, status: "error" });
++        }
++      }
++      return { checked: sessions.length, results };
++    },
++  },
++};
+diff --git a/src/routes/store.ts b/src/routes/store.ts
+index 096a591..f0705e4 100644
+--- a/src/routes/store.ts
++++ b/src/routes/store.ts
+@@ -80,20 +80,96 @@ async function resolveCartProducts(
+       }
+       cache.set(item.syncProductId, product);
+     }
+     const variant = product.variants.find((v) => v.id === item.syncVariantId);
+     if (!variant) throw PluginRouteError.badRequest(`Variant ${item.syncVariantId} not found.`);
+     resolved.push({ product, variant, item });
+   }
+   return resolved;
+ }
+ 
++// Shared by checkout/confirm (the primary fulfillment path, called right
++// after the Stripe redirect) and orders/reconcile (the manual backstop for
++// sessions whose browser died before that redirect happened). Assumes the
++// caller has already validated settings are configured — callers that skip
++// that check (like reconcile, which checks once before its whole batch)
++// still get correct behavior since nothing here re-derives the check.
++export async function fulfillCheckoutSession(
++  ctx: RouteContext, settings: Awaited<ReturnType<typeof getSettings>>, sessionId: string,
++): Promise<{ status: "already" | OrderStatus; order: OrderRecord }> {
++  // Idempotency: a client retry, double-call, or a reconcile pass revisiting
++  // an already-confirmed session must not double-charge Printful.
++  const existing = (await ctx.storage.orders.get(sessionId)) as OrderRecord | null;
++  if (existing) return { status: "already", order: existing };
++
++  const session = await getCheckoutSession(ctx, settings, sessionId);
++  if (session.payment_status !== "paid") throw PluginRouteError.badRequest("This payment hasn't completed.");
++
++  let cart: CartItem[];
++  let recipient: RecipientAddress;
++  let shippingRateId: string;
++  try {
++    cart = JSON.parse(session.metadata.cart);
++    recipient = JSON.parse(session.metadata.recipient);
++    shippingRateId = session.metadata.shippingRateId;
++    if (!Array.isArray(cart) || cart.length === 0 || !recipient || !shippingRateId) throw new Error("missing metadata");
++  } catch {
++    throw PluginRouteError.badRequest("Unrecognized checkout session.");
++  }
++
++  // Printful order creation (and re-deriving its line items) is wrapped
++  // together: the customer already paid, so any failure here — including
++  // a product/variant that vanished from Printful since checkout — must
++  // be stored as a failed order for manual retry, never thrown as a 500
++  // that would strand a paid order with no record at all.
++  let status: OrderStatus;
++  let printfulOrderId: number | null = null;
++  let lastError: string | null = null;
++  try {
++    const cache = new Map<number, SyncProduct>();
++    const resolved = await resolveCartProducts(ctx, settings, cart, cache);
++    const orderItems = resolved.map(({ variant, item }) => ({
++      syncVariantId: item.syncVariantId, quantity: item.quantity, retailPrice: variant.retailPrice,
++    }));
++    const result = await createPrintfulOrder(ctx, settings, {
++      externalId: sessionId,
++      recipient,
++      items: orderItems,
++      shippingRateId,
++      confirm: true,
++    });
++    status = "fulfilled";
++    printfulOrderId = result.id;
++  } catch (err) {
++    status = "failed";
++    lastError = String(err);
++  }
++
++  const now = new Date().toISOString();
++  const record: OrderRecord = {
++    sessionId,
++    status,
++    amountCents: session.amount_total,
++    currency: session.currency,
++    email: session.customer_details?.email ?? "",
++    cart,
++    shippingRateId,
++    recipient,
++    printfulOrderId,
++    lastError,
++    createdAt: now,
++    updatedAt: now,
++  };
++  await ctx.storage.orders.put(sessionId, record as unknown as Record<string, unknown>);
++  return { status: record.status, order: record };
++}
++
+ export const storeRoutes = {
+   "products/list": {
+     public: true,
+     handler: async (ctx: RouteContext) => {
+       const settings = await getSettings(ctx);
+       const products = await listSyncProducts(ctx, settings);
+       return { products };
+     },
+   },
+ 
+@@ -176,82 +252,19 @@ export const storeRoutes = {
+     },
+   },
+ 
+   "checkout/confirm": {
+     public: true,
+     handler: async (ctx: RouteContext) => {
+       const body = (ctx.input ?? {}) as { sessionId?: string };
+       const sessionId = String(body.sessionId ?? "").trim();
+       if (!sessionId) throw PluginRouteError.badRequest("sessionId is required.");
+ 
+-      // Idempotency: a client retry or double-call must not double-charge Printful.
+-      const existing = (await ctx.storage.orders.get(sessionId)) as OrderRecord | null;
+-      if (existing) return { status: "already", order: existing };
+-
+       const settings = await getSettings(ctx);
+       if (!settings.printfulApiKey || !settings.stripeSecretKey) {
+         throw PluginRouteError.badRequest("Store isn't configured yet.");
+       }
+ 
+-      const session = await getCheckoutSession(ctx, settings, sessionId);
+-      if (session.payment_status !== "paid") throw PluginRouteError.badRequest("This payment hasn't completed.");
+-
+-      let cart: CartItem[];
+-      let recipient: RecipientAddress;
+-      let shippingRateId: string;
+-      try {
+-        cart = JSON.parse(session.metadata.cart);
+-        recipient = JSON.parse(session.metadata.recipient);
+-        shippingRateId = session.metadata.shippingRateId;
+-        if (!Array.isArray(cart) || cart.length === 0 || !recipient || !shippingRateId) throw new Error("missing metadata");
+-      } catch {
+-        throw PluginRouteError.badRequest("Unrecognized checkout session.");
+-      }
+-
+-      // Printful order creation (and re-deriving its line items) is wrapped
+-      // together: the customer already paid, so any failure here — including
+-      // a product/variant that vanished from Printful since checkout — must
+-      // be stored as a failed order for manual retry, never thrown as a 500
+-      // that would strand a paid order with no record at all.
+-      let status: OrderStatus;
+-      let printfulOrderId: number | null = null;
+-      let lastError: string | null = null;
+-      try {
+-        const cache = new Map<number, SyncProduct>();
+-        const resolved = await resolveCartProducts(ctx, settings, cart, cache);
+-        const orderItems = resolved.map(({ variant, item }) => ({
+-          syncVariantId: item.syncVariantId, quantity: item.quantity, retailPrice: variant.retailPrice,
+-        }));
+-        const result = await createPrintfulOrder(ctx, settings, {
+-          externalId: sessionId,
+-          recipient,
+-          items: orderItems,
+-          shippingRateId,
+-          confirm: true,
+-        });
+-        status = "fulfilled";
+-        printfulOrderId = result.id;
+-      } catch (err) {
+-        status = "failed";
+-        lastError = String(err);
+-      }
+-
+-      const now = new Date().toISOString();
+-      const record: OrderRecord = {
+-        sessionId,
+-        status,
+-        amountCents: session.amount_total,
+-        currency: session.currency,
+-        email: session.customer_details?.email ?? "",
+-        cart,
+-        shippingRateId,
+-        recipient,
+-        printfulOrderId,
+-        lastError,
+-        createdAt: now,
+-        updatedAt: now,
+-      };
+-      await ctx.storage.orders.put(sessionId, record as unknown as Record<string, unknown>);
+-      return { status: record.status, order: record };
++      return fulfillCheckoutSession(ctx, settings, sessionId);
+     },
+   },
+ };
+diff --git a/src/sandbox-entry.ts b/src/sandbox-entry.ts
+index 2f1ab46..feb9077 100644
+--- a/src/sandbox-entry.ts
++++ b/src/sandbox-entry.ts
+@@ -1,15 +1,16 @@
+ import { definePlugin } from "emdash";
+ import type { PluginContext } from "emdash";
+ import { DEFAULT_SETTINGS } from "./types.js";
+ import { settingsRoutes } from "./routes/settings.js";
+ import { storeRoutes } from "./routes/store.js";
++import { ordersRoutes } from "./routes/orders.js";
+ 
+ export function createPlugin() {
+   return definePlugin({
+     id: "ebt-store",
+     version: "0.1.0",
+     capabilities: ["network:request", "email:send"],
+     allowedHosts: ["api.printful.com", "api.stripe.com"],
+     storage: {
+       orders: {
+         indexes: ["status", "createdAt", "email"],
+@@ -30,15 +31,16 @@ export function createPlugin() {
+             if ((await ctx.kv.get(`settings:${key}`)) === null) {
+               await ctx.kv.set(`settings:${key}`, value);
+             }
+           }
+         },
+       },
+     },
+     routes: {
+       ...settingsRoutes,
+       ...storeRoutes,
++      ...ordersRoutes,
+     },
+   });
+ }
+ 
+ export default createPlugin;
+diff --git a/tests/helpers.ts b/tests/helpers.ts
+index f73848d..c5b2973 100644
+--- a/tests/helpers.ts
++++ b/tests/helpers.ts
+@@ -3,29 +3,44 @@ import type { OrderRecord } from "../src/types.js";
+ 
+ export function collection<T>() {
+   const store = new Map<string, T>();
+   return {
+     async get(id: string) {
+       return store.has(id) ? (store.get(id) as T) : null;
+     },
+     async put(id: string, data: T) {
+       store.set(id, data);
+     },
+-    async query(opts?: { where?: Record<string, unknown>; limit?: number }) {
++    async query(opts?: { where?: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; limit?: number; cursor?: string }) {
+       let items = Array.from(store.entries()).map(([id, data]) => ({ id, data }));
+       if (opts?.where) {
+         for (const [k, v] of Object.entries(opts.where)) {
+           items = items.filter((i) => (i.data as Record<string, unknown>)[k] === v);
+         }
+       }
+-      if (opts?.limit) items = items.slice(0, opts.limit);
+-      return { items, hasMore: false };
++      const orderEntry = opts?.orderBy && Object.entries(opts.orderBy)[0];
++      if (orderEntry) {
++        const [field, dir] = orderEntry;
++        items = items.slice().sort((a, b) => {
++          const av = (a.data as Record<string, unknown>)[field];
++          const bv = (b.data as Record<string, unknown>)[field];
++          const cmp = av === bv ? 0 : (av as string) > (bv as string) ? 1 : -1;
++          return dir === "desc" ? -cmp : cmp;
++        });
++      }
++      // crewcut: cursor = index offset into the (already filtered/sorted)
++      // in-memory array — the brief calls this out as sufficient for tests.
++      const offset = opts?.cursor ? Number(opts.cursor) : 0;
++      const limit = opts?.limit ?? items.length;
++      const page = items.slice(offset, offset + limit);
++      const hasMore = offset + page.length < items.length;
++      return { items: page, cursor: hasMore ? String(offset + page.length) : undefined, hasMore };
+     },
+   };
+ }
+ 
+ export function makeCtx(overrides: { settings?: Record<string, unknown>; origin?: string | null } = {}) {
+   const kv = new Map<string, unknown>();
+   for (const [k, v] of Object.entries(overrides.settings ?? {})) {
+     kv.set(`settings:${k}`, v);
+   }
+   const orders = collection<OrderRecord>();
+diff --git a/tests/orders.test.ts b/tests/orders.test.ts
+new file mode 100644
+index 0000000..1454bce
+--- /dev/null
++++ b/tests/orders.test.ts
+@@ -0,0 +1,206 @@
++import { describe, it, expect } from "vitest";
++import { vi } from "vitest";
++import { ordersRoutes } from "../src/routes/orders.js";
++import { makeCtx } from "./helpers.js";
++import type { OrderRecord } from "../src/types.js";
++
++const configuredSettings = {
++  printfulApiKey: "pf_test",
++  printfulStoreId: "",
++  stripeSecretKey: "sk_test",
++  siteOrigin: "https://example.com",
++};
++
++const recipient = {
++  name: "Jo", email: "jo@x.test", address1: "1 Main", city: "Austin",
++  stateCode: "TX", countryCode: "US", zip: "78701",
++};
++
++const cart = [{ syncProductId: 13, syncVariantId: 10, quantity: 2 }];
++
++function makeOrder(overrides: Partial<OrderRecord>): OrderRecord {
++  return {
++    sessionId: "cs_x",
++    status: "fulfilled",
++    amountCents: 6498,
++    currency: "usd",
++    email: "jo@x.test",
++    cart,
++    shippingRateId: "STANDARD",
++    recipient,
++    printfulOrderId: 555,
++    lastError: null,
++    createdAt: "2026-07-01T00:00:00.000Z",
++    updatedAt: "2026-07-01T00:00:00.000Z",
++    ...overrides,
++  };
++}
++
++describe("orders/list", () => {
++  it("returns items filtered by status", async () => {
++    const ctx = makeCtx({ settings: configuredSettings });
++    await ctx.storage.orders.put("cs_paid", makeOrder({ sessionId: "cs_paid", status: "fulfilled", createdAt: "2026-07-01T00:00:00.000Z" }));
++    await ctx.storage.orders.put("cs_failed", makeOrder({ sessionId: "cs_failed", status: "failed", createdAt: "2026-07-02T00:00:00.000Z" }));
++
++    const result = (await ordersRoutes["orders/list"].handler({ ...ctx, input: { status: "failed" } } as never)) as { items: Array<{ id: string; data: OrderRecord }> };
++    expect(result.items).toHaveLength(1);
++    expect(result.items[0].data.sessionId).toBe("cs_failed");
++  });
++
++  it("rejects an invalid status value", async () => {
++    const ctx = makeCtx({ settings: configuredSettings });
++    await expect(
++      ordersRoutes["orders/list"].handler({ ...ctx, input: { status: "bogus" } } as never),
++    ).rejects.toMatchObject({ status: 400 });
++  });
++
++  it("paginates via cursor — a small limit returns a cursor, and re-querying with it returns the rest", async () => {
++    const ctx = makeCtx({ settings: configuredSettings });
++    for (let i = 0; i < 5; i++) {
++      await ctx.storage.orders.put(`cs_${i}`, makeOrder({ sessionId: `cs_${i}`, createdAt: `2026-07-0${i + 1}T00:00:00.000Z` }));
++    }
++
++    const first = (await ordersRoutes["orders/list"].handler({ ...ctx, input: { limit: 2 } } as never)) as {
++      items: Array<{ id: string; data: OrderRecord }>; cursor?: string; hasMore: boolean;
++    };
++    expect(first.items).toHaveLength(2);
++    expect(first.hasMore).toBe(true);
++    expect(first.cursor).toBeTruthy();
++
++    const second = (await ordersRoutes["orders/list"].handler({ ...ctx, input: { limit: 2, cursor: first.cursor } } as never)) as {
++      items: Array<{ id: string; data: OrderRecord }>; cursor?: string; hasMore: boolean;
++    };
++    expect(second.items).toHaveLength(2);
++
++    const third = (await ordersRoutes["orders/list"].handler({ ...ctx, input: { limit: 2, cursor: second.cursor } } as never)) as {
++      items: Array<{ id: string; data: OrderRecord }>; cursor?: string; hasMore: boolean;
++    };
++    expect(third.items).toHaveLength(1);
++    expect(third.hasMore).toBe(false);
++
++    const allIds = [...first.items, ...second.items, ...third.items].map((i) => i.id).sort();
++    expect(allIds).toEqual(["cs_0", "cs_1", "cs_2", "cs_3", "cs_4"]);
++  });
++});
++
++describe("orders/reconcile", () => {
++  function printfulProductResponse() {
++    return JSON.stringify({
++      code: 200,
++      result: {
++        sync_product: { id: 13, name: "T-shirt" },
++        sync_variants: [{
++          id: 10, name: "Red / M", retail_price: "29.99", currency: "USD",
++          size: "M", color: "Red", availability_status: "active",
++          product: { image: "https://x/v.png" },
++        }],
++      },
++    });
++  }
++
++  function mockGlobal(opts: { orderCallCounter: { count: number } }) {
++    return vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
++      const u = String(url);
++      if (u.includes("api.printful.com")) {
++        if (u.includes("/store/products/")) return Promise.resolve(new Response(printfulProductResponse(), { status: 200 }));
++        if (u.includes("/orders")) {
++          opts.orderCallCounter.count += 1;
++          return Promise.resolve(new Response(JSON.stringify({ code: 200, result: { id: 555, status: "confirmed" } }), { status: 200 }));
++        }
++      }
++      if (u.includes("api.stripe.com")) {
++        if (u.includes("/checkout/sessions/cs_new")) {
++          return Promise.resolve(new Response(JSON.stringify({
++            id: "cs_new", payment_status: "paid", amount_total: 6498, currency: "usd",
++            metadata: { source: "ebt-store", cart: JSON.stringify(cart), shippingRateId: "STANDARD", recipient: JSON.stringify(recipient) },
++            customer_details: { email: "jo@x.test" },
++          }), { status: 200 }));
++        }
++        if (u.includes("/checkout/sessions?")) {
++          return Promise.resolve(new Response(JSON.stringify({
++            data: [
++              { id: "cs_new", payment_status: "paid", metadata: { source: "ebt-store" } },
++              { id: "cs_existing", payment_status: "paid", metadata: { source: "ebt-store" } },
++              { id: "cs_donate", payment_status: "paid", metadata: { source: "donate" } },
++            ],
++            has_more: false,
++          }), { status: 200 }));
++        }
++      }
++      return Promise.resolve(new Response(JSON.stringify({ error: "unmocked url: " + u }), { status: 500 }));
++    });
++  }
++
++  it("fulfills a new own-source session, skips an already-recorded one without re-hitting Printful, and excludes sessions from other plugins entirely", async () => {
++    const orderCallCounter = { count: 0 };
++    mockGlobal({ orderCallCounter });
++    const ctx = makeCtx({ settings: configuredSettings });
++    await ctx.storage.orders.put("cs_existing", makeOrder({ sessionId: "cs_existing", status: "fulfilled" }));
++
++    const result = (await ordersRoutes["orders/reconcile"].handler({ ...ctx, input: {} } as never)) as {
++      checked: number; results: Array<{ sessionId: string; status: string }>;
++    };
++
++    // Only the two "ebt-store" sessions were checked — the "donate" one from
++    // another plugin sharing this Stripe account was filtered out entirely.
++    expect(result.checked).toBe(2);
++    expect(result.results.find((r) => r.sessionId === "cs_donate")).toBeUndefined();
++
++    const newResult = result.results.find((r) => r.sessionId === "cs_new");
++    expect(newResult?.status).toBe("fulfilled");
++    expect(orderCallCounter.count).toBe(1); // Printful order created exactly once, for cs_new
++
++    const existingResult = result.results.find((r) => r.sessionId === "cs_existing");
++    expect(existingResult?.status).toBe("already");
++  });
++
++  it("isolates a session whose fulfillment throws — the batch completes and the sibling session still gets its own result", async () => {
++    vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
++      const u = String(url);
++      if (u.includes("api.stripe.com")) {
++        // The per-session lookup for cs_bad fails (e.g. Stripe outage or
++        // revoked key mid-batch) — fulfillCheckoutSession should throw here,
++        // not the batch-list call above it.
++        if (u.includes("/checkout/sessions/cs_bad")) {
++          return Promise.resolve(new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500 }));
++        }
++        if (u.includes("/checkout/sessions?")) {
++          return Promise.resolve(new Response(JSON.stringify({
++            data: [
++              { id: "cs_bad", payment_status: "paid", metadata: { source: "ebt-store" } },
++              { id: "cs_existing", payment_status: "paid", metadata: { source: "ebt-store" } },
++            ],
++            has_more: false,
++          }), { status: 200 }));
++        }
++      }
++      return Promise.resolve(new Response(JSON.stringify({ error: "unmocked url: " + u }), { status: 500 }));
++    });
++    const ctx = makeCtx({ settings: configuredSettings });
++    await ctx.storage.orders.put("cs_existing", makeOrder({ sessionId: "cs_existing", status: "fulfilled" }));
++
++    // Not wrapped in expect(...).rejects — a throw here would fail the test,
++    // proving the per-session try/catch in the route absorbed cs_bad's
++    // failure instead of aborting the whole reconcile call.
++    const result = (await ordersRoutes["orders/reconcile"].handler({ ...ctx, input: {} } as never)) as {
++      checked: number; results: Array<{ sessionId: string; status: string }>;
++    };
++
++    expect(result.checked).toBe(2);
++    const badResult = result.results.find((r) => r.sessionId === "cs_bad");
++    expect(badResult?.status).toBe("error");
++
++    // The sibling session's own result must still be present and correct —
++    // proving the loop actually continued past cs_bad rather than the whole
++    // batch just failing to crash for some unrelated reason.
++    const existingResult = result.results.find((r) => r.sessionId === "cs_existing");
++    expect(existingResult?.status).toBe("already");
++  });
++
++  it("rejects when the store isn't configured", async () => {
++    const ctx = makeCtx({ settings: { printfulApiKey: "", stripeSecretKey: "", siteOrigin: "https://example.com" } });
++    await expect(
++      ordersRoutes["orders/reconcile"].handler({ ...ctx, input: {} } as never),
++    ).rejects.toMatchObject({ status: 400 });
++  });
++});
