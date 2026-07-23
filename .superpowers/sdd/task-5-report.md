@@ -66,5 +66,5 @@ Stripe Checkout Session id, per the precedent in
 ## Commit
 
 ```
-<filled in after commit below>
+835d50c feat(store): add storefront routes (products, shipping, checkout, confirm)
 ```
