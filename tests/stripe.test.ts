@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { createStripeCustomer, createCheckoutSession, getCheckoutSession, listRecentPaidSessions } from "../src/lib/stripe.js";
+import { createStripeCustomer, createCheckoutSession, getCheckoutSession, listRecentPaidSessions, StripeApiError } from "../src/lib/stripe.js";
 import { makeCtx, mockFetch } from "./helpers.js";
 
 const settings = { printfulApiKey: "", printfulStoreId: "", stripeSecretKey: "sk_test", siteOrigin: "https://x.test" };
@@ -73,5 +73,19 @@ describe("stripe client", () => {
     await createStripeCustomer(ctx as never, settings, recipient);
     const sentHeaders = capturedInit?.headers as Record<string, string>;
     expect(sentHeaders.Authorization).toBe("Bearer sk_test");
+  });
+
+  it("createStripeCustomer rejects with StripeApiError on non-2xx response", async () => {
+    mockFetch({
+      stripe: () => new Response(JSON.stringify({ error: { message: "Unauthorized" } }), { status: 401 }),
+    });
+    const ctx = makeCtx();
+    await expect(createStripeCustomer(ctx as never, settings, recipient)).rejects.toBeInstanceOf(StripeApiError);
+    try {
+      await createStripeCustomer(ctx as never, settings, recipient);
+      throw new Error("expected rejection");
+    } catch (err) {
+      expect((err as StripeApiError).status).toBe(401);
+    }
   });
 });
