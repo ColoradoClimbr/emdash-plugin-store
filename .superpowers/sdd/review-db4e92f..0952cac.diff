@@ -1,0 +1,1425 @@
+# Review package: db4e92f..0952cac
+
+## Commits
+0952cac fix(store): return clean 400 for unknown product in checkout/create-session
+2d9bfd3 docs(sdd): add task 5 review package
+06f5f6b docs(sdd): record task 5 commit SHA in report
+835d50c feat(store): add storefront routes (products, shipping, checkout, confirm)
+fbfe450 docs(sdd): mark task 4 complete
+
+## Files changed
+ .superpowers/sdd/progress.md                  |   1 +
+ .superpowers/sdd/review-db4e92f..06f5f6b.diff | 692 ++++++++++++++++++++++++++
+ .superpowers/sdd/task-5-report.md             |  84 ++++
+ src/routes/store.ts                           | 257 ++++++++++
+ src/sandbox-entry.ts                          |   2 +
+ tests/helpers.ts                              |   9 +-
+ tests/store.test.ts                           | 244 +++++++++
+ 7 files changed, 1288 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/.superpowers/sdd/progress.md b/.superpowers/sdd/progress.md
+index 982a1ac..fd9bbf7 100644
+--- a/.superpowers/sdd/progress.md
++++ b/.superpowers/sdd/progress.md
+@@ -1,3 +1,4 @@
+ Task 1: complete (commits 4b825dc..c282f0e, review clean)
+ Task 2: complete (commits c282f0e..07f8e63 +gitignore 33bb0fb, review clean - minor coverage note only)
+ Task 3: complete (commits 07f8e63..0d99d34, fix 2a96401, review clean)
++Task 4: complete (commits 2a96401..08e351d, fix 0034d8a, review clean)
+diff --git a/.superpowers/sdd/review-db4e92f..06f5f6b.diff b/.superpowers/sdd/review-db4e92f..06f5f6b.diff
+new file mode 100644
+index 0000000..143c899
+--- /dev/null
++++ b/.superpowers/sdd/review-db4e92f..06f5f6b.diff
+@@ -0,0 +1,692 @@
++# Review package: db4e92f..06f5f6b
++
++## Commits
++06f5f6b docs(sdd): record task 5 commit SHA in report
++835d50c feat(store): add storefront routes (products, shipping, checkout, confirm)
++fbfe450 docs(sdd): mark task 4 complete
++
++## Files changed
++ .superpowers/sdd/progress.md      |   1 +
++ .superpowers/sdd/task-5-report.md |  70 +++++++++++
++ src/routes/store.ts               | 253 ++++++++++++++++++++++++++++++++++++++
++ src/sandbox-entry.ts              |   2 +
++ tests/helpers.ts                  |   9 +-
++ tests/store.test.ts               | 230 ++++++++++++++++++++++++++++++++++
++ 6 files changed, 564 insertions(+), 1 deletion(-)
++
++## Diff
++diff --git a/.superpowers/sdd/progress.md b/.superpowers/sdd/progress.md
++index 982a1ac..fd9bbf7 100644
++--- a/.superpowers/sdd/progress.md
+++++ b/.superpowers/sdd/progress.md
++@@ -1,3 +1,4 @@
++ Task 1: complete (commits 4b825dc..c282f0e, review clean)
++ Task 2: complete (commits c282f0e..07f8e63 +gitignore 33bb0fb, review clean - minor coverage note only)
++ Task 3: complete (commits 07f8e63..0d99d34, fix 2a96401, review clean)
+++Task 4: complete (commits 2a96401..08e351d, fix 0034d8a, review clean)
++diff --git a/.superpowers/sdd/task-5-report.md b/.superpowers/sdd/task-5-report.md
++new file mode 100644
++index 0000000..d220329
++--- /dev/null
+++++ b/.superpowers/sdd/task-5-report.md
++@@ -0,0 +1,70 @@
+++# Task 5 report: Storefront routes (products, shipping rates, checkout, confirm)
+++
+++## Summary
+++
+++Implemented `src/routes/store.ts` exporting `storeRoutes` with five public
+++routes — `products/list`, `products/get`, `cart/shipping-rates`,
+++`checkout/create-session`, `checkout/confirm` — wired into
+++`src/sandbox-entry.ts` alongside `settingsRoutes`. All server-side price and
+++shipping computation is derived from Printful/Stripe responses, never from
+++client input. Confirmation is idempotent via `ctx.storage.orders`, keyed by
+++Stripe Checkout Session id, per the precedent in
+++`emdash-plugin-petition/src/routes/donate.ts`.
+++
+++## Files touched
+++
+++- Created: `C:\ebt-emdash\emdash-plugin-store\src\routes\store.ts`
+++- Created: `C:\ebt-emdash\emdash-plugin-store\tests\store.test.ts`
+++- Modified: `C:\ebt-emdash\emdash-plugin-store\src\sandbox-entry.ts` (import + spread `storeRoutes`)
+++- Modified: `C:\ebt-emdash\emdash-plugin-store\tests\helpers.ts` (`makeCtx` now returns a `request: Request` with a configurable `Origin` header, defaulting to `"https://everybittexas.com"` — the plugin's own `DEFAULT_SETTINGS.siteOrigin` — so existing tests that don't care about origin are unaffected)
+++
+++## Precedent read and followed
+++
+++- `emdash-plugin-petition/src/routes/donate.ts` — no-webhook / confirm-by-session-id pattern, `try/catch` around the post-payment fulfillment call so a fulfillment failure never throws a 500 to a customer who already paid.
+++- `emdash-plugin-petition/src/routes/signSubmit.ts` — `validateOrigin`/`hostAllowed` shape (checks `Origin` header, falls back to `Referer`, allows localhost for local dev).
+++
+++## Deviations from the brief, with reasoning (flagging per crewcut, not silently deciding)
+++
+++1. **`validateOrigin` signature takes `siteOrigin` as a second argument**, unlike petition's single-arg `validateOrigin(request)`. Petition's version checks against a hardcoded `ALLOWED_ORIGIN_HOSTS` set; this plugin has no such hardcoded set — the brief itself says the copy should be "hostAllowed-against-settings.siteOrigin," which is a per-install configurable value, not a constant. There's no way to thread that into a single-arg function without a module-level side channel, which would be worse. I resolved this by loading `settings` first in `checkout/create-session` and calling `validateOrigin(ctx.request, settings.siteOrigin)` as literally the first check afterward — before the missing-config check and all Printful/Stripe calls, so it's still "first" in the sense of "before any expensive work," even though the brief's bullet list showed "validateOrigin" and "load settings" as two separate top-level steps. Other reading: keep `validateOrigin(request)` single-arg and hardcode an `ALLOWED_ORIGIN_HOSTS`-equivalent constant in `store.ts`, mirroring petition even more literally — I judged this wrong for this plugin since `siteOrigin` is already a first-class configurable setting field (`PluginSettings.siteOrigin`) that exists specifically for this purpose.
+++
+++2. **`checkout/confirm`'s try/catch scope is wider than literally described.** The brief scopes the try/catch narrowly around `createPrintfulOrder(...)` itself. I put the entire "re-derive Printful order items via `getSyncProduct`" step inside the same try/catch as the `createPrintfulOrder` call, sharing the loop/caching helper (`resolveCartProducts`) with `checkout/create-session`. Reasoning: if a product/variant was deleted from Printful between checkout and confirm, `getSyncProduct` or the variant-lookup would throw — and per the brief's own stated rationale ("the customer already paid; a thrown 500 here would strand a paid order with no record at all"), that failure needs the exact same `status: "failed"` / `lastError` treatment as a `createPrintfulOrder` failure, not an uncaught 500. Covered by the "Printful failure" test, though that test exercises failure via the `/orders` endpoint rejecting rather than a missing product — the code path for a missing-product failure is the same catch block, just not separately asserted.
+++
+++3. **No `printfulApiKey`/`stripeSecretKey` configured-check on `products/list`, `products/get`, or `cart/shipping-rates`.** The brief only specifies this check for routes 4 and 5 ("same missing-config check as route 4"). If Printful isn't configured, `listSyncProducts`/`getSyncProduct`/`getShippingRates` will throw a raw `PrintfulApiError` (likely a 401) rather than a clean `PluginRouteError.badRequest("Store isn't configured yet.")`. I left this as-is rather than add an unrequested check, since the brief was specific about which routes get it — flagging in case that's an oversight in the brief rather than an intentional omission (an unconfigured store's catalog page would surface a less friendly error than the checkout routes do).
+++
+++## TDD evidence
+++
+++1. Wrote `tests/store.test.ts` importing `storeRoutes` from `../src/routes/store.js` (didn't exist yet) and ran:
+++   ```
+++   pnpm test -- store
+++   ```
+++   Result: failed as expected —
+++   ```
+++   Error: Cannot find module '../src/routes/store.js' imported from .../tests/store.test.ts
+++   Test Files  1 failed | 4 passed (5)
+++   ```
+++2. Implemented `src/routes/store.ts`, wired into `src/sandbox-entry.ts`.
+++3. Re-ran `pnpm test -- store`: `Test Files 5 passed (5)`, `Tests 31 passed (31)`.
+++4. Ran full suite `pnpm test`: `Test Files 5 passed (5)`, `Tests 31 passed (31)` — no regressions in scaffold/settings/printful/stripe tests.
+++5. Ran `pnpm typecheck` (`tsc --noEmit`): clean, no errors.
+++
+++### Test cases in `tests/store.test.ts` (13 new tests)
+++
+++- `products/list` returns mapped products from a mocked Printful response.
+++- `products/get` returns a product with variants; rejects a non-positive-integer `syncProductId`.
+++- `cart/shipping-rates` returns rates for a valid cart; rejects an empty `items` array.
+++- `checkout/create-session`: rejects an invalid origin (403); rejects when the store isn't configured (400); rejects an unknown `shippingRateId` (400); computes `unit_amount` from Printful's `retail_price` while a malicious client-supplied `retailPrice` field on the cart item is ignored, and asserts the captured Stripe request body's `unit_amount` for both the product line item (2999, from 29.99) and the shipping line item (500, from Printful's quoted 5.00 rate, not any client value); returns `{ url }` on success.
+++- `checkout/confirm`: rejects an unpaid session (400); on a paid session calls `createPrintfulOrder` and stores a `fulfilled` `OrderRecord`, then a second call with the same `sessionId` returns `{status:"already"}` without incrementing the Printful order-creation call counter (asserted at exactly 1 across both calls); on a Printful failure (mocked 400 from `/orders`) stores a `failed` `OrderRecord` with `lastError` set and the call does **not** throw; rejects a session whose metadata is missing/unparseable ("Unrecognized checkout session").
+++
+++## Self-review
+++
+++- Confirmed `RouteContext` from the installed `emdash@0.30.0` package (`node_modules/emdash/dist/types-BvB7gDOD.d.mts`) has `request: Request` as a required (non-optional) field, matching the brief's assumption — no discrepancy found there.
+++- Confirmed `PluginRouteError` (`node_modules/emdash/dist/index-wYnC6u4o.d.mts`) has a public `status: number` field with `badRequest`→400, `forbidden`→403, matching what the tests assert via `toMatchObject({ status: ... })`.
+++- Did not modify any signatures in `src/lib/printful.ts` or `src/lib/stripe.ts`.
+++- Did not touch `src/routes/settings.ts`, `src/settings.ts`, or any test file other than adding `tests/store.test.ts` and the minimal `tests/helpers.ts` diff described above.
+++- `resolveCartProducts` helper is shared between `checkout/create-session` and `checkout/confirm` specifically because both need identical "fetch each unique `syncProductId` once, find the variant" logic — avoided duplicating that loop.
+++
+++## Commit
+++
+++```
+++835d50c feat(store): add storefront routes (products, shipping, checkout, confirm)
+++```
++diff --git a/src/routes/store.ts b/src/routes/store.ts
++new file mode 100644
++index 0000000..2b0964d
++--- /dev/null
+++++ b/src/routes/store.ts
++@@ -0,0 +1,253 @@
+++import { PluginRouteError } from "emdash";
+++import type { RouteContext } from "emdash";
+++import type { CartItem, OrderRecord, OrderStatus, RecipientAddress } from "../types.js";
+++import { getSettings } from "../settings.js";
+++import { createPrintfulOrder, getShippingRates, getSyncProduct, listSyncProducts } from "../lib/printful.js";
+++import { createCheckoutSession, createStripeCustomer, getCheckoutSession } from "../lib/stripe.js";
+++
+++const MAX_ITEMS = 50;
+++const MAX_QTY = 20;
+++// Printful's known-good availability value seen in the API docs/fixtures.
+++// crewcut: allowlist of one rather than a denylist of every discontinued/out
+++// of stock string Printful might return — brief calls for rejecting anything
+++// that isn't exactly this, not guessing at the full enum.
+++const AVAILABLE_STATUS = "active";
+++
+++type SyncProduct = Awaited<ReturnType<typeof getSyncProduct>>;
+++
+++// Local copy of emdash-plugin-petition's signSubmit.ts validateOrigin/hostAllowed,
+++// adapted because this plugin has no hardcoded allowed-host set — the allowed
+++// host is this store's own configurable settings.siteOrigin instead.
+++function hostAllowed(value: string, siteOrigin: string): boolean {
+++  try {
+++    const host = new URL(value).host.toLowerCase();
+++    const allowedHost = new URL(siteOrigin).host.toLowerCase();
+++    return host === allowedHost || host === "localhost" || host.startsWith("localhost:") || host.endsWith(".localhost");
+++  } catch {
+++    return false;
+++  }
+++}
+++
+++function validateOrigin(request: Request, siteOrigin: string): boolean {
+++  const origin = request.headers.get("Origin");
+++  if (origin) return hostAllowed(origin, siteOrigin);
+++  const referer = request.headers.get("Referer");
+++  return referer ? hostAllowed(referer, siteOrigin) : false;
+++}
+++
+++// Sanity bounds only (mirrors donate.ts's MIN_CENTS/MAX_CENTS style), not
+++// exhaustive validation of cart contents.
+++function validateCartItems(items: unknown): CartItem[] {
+++  if (!Array.isArray(items) || items.length === 0) {
+++    throw PluginRouteError.badRequest("At least one cart item is required.");
+++  }
+++  if (items.length > MAX_ITEMS) {
+++    throw PluginRouteError.badRequest(`Cart cannot have more than ${MAX_ITEMS} items.`);
+++  }
+++  return items.map((raw) => {
+++    const item = (raw ?? {}) as Partial<CartItem>;
+++    const syncProductId = Number(item.syncProductId);
+++    const syncVariantId = Number(item.syncVariantId);
+++    const quantity = Number(item.quantity);
+++    if (!Number.isInteger(syncProductId) || syncProductId <= 0) {
+++      throw PluginRouteError.badRequest("Invalid syncProductId.");
+++    }
+++    if (!Number.isInteger(syncVariantId) || syncVariantId <= 0) {
+++      throw PluginRouteError.badRequest("Invalid syncVariantId.");
+++    }
+++    if (!Number.isInteger(quantity) || quantity <= 0 || quantity > MAX_QTY) {
+++      throw PluginRouteError.badRequest(`Quantity must be between 1 and ${MAX_QTY}.`);
+++    }
+++    return { syncProductId, syncVariantId, quantity };
+++  });
+++}
+++
+++// Fetches each unique syncProductId in `items` at most once via `cache`, and
+++// resolves the priced Stripe line items for them. Used by both
+++// checkout/create-session (pricing) and checkout/confirm (re-deriving
+++// Printful order items) so a cart spanning the same product isn't refetched.
+++async function resolveCartProducts(
+++  ctx: RouteContext, settings: Awaited<ReturnType<typeof getSettings>>, items: CartItem[], cache: Map<number, SyncProduct>,
+++): Promise<Array<{ product: SyncProduct; variant: SyncProduct["variants"][number]; item: CartItem }>> {
+++  const resolved: Array<{ product: SyncProduct; variant: SyncProduct["variants"][number]; item: CartItem }> = [];
+++  for (const item of items) {
+++    let product = cache.get(item.syncProductId);
+++    if (!product) {
+++      product = await getSyncProduct(ctx, settings, item.syncProductId);
+++      cache.set(item.syncProductId, product);
+++    }
+++    const variant = product.variants.find((v) => v.id === item.syncVariantId);
+++    if (!variant) throw PluginRouteError.badRequest(`Variant ${item.syncVariantId} not found.`);
+++    resolved.push({ product, variant, item });
+++  }
+++  return resolved;
+++}
+++
+++export const storeRoutes = {
+++  "products/list": {
+++    public: true,
+++    handler: async (ctx: RouteContext) => {
+++      const settings = await getSettings(ctx);
+++      const products = await listSyncProducts(ctx, settings);
+++      return { products };
+++    },
+++  },
+++
+++  "products/get": {
+++    public: true,
+++    handler: async (ctx: RouteContext) => {
+++      const body = (ctx.input ?? {}) as { syncProductId?: number };
+++      const syncProductId = Number(body.syncProductId);
+++      if (!Number.isInteger(syncProductId) || syncProductId <= 0) {
+++        throw PluginRouteError.badRequest("syncProductId must be a positive integer.");
+++      }
+++      const settings = await getSettings(ctx);
+++      const product = await getSyncProduct(ctx, settings, syncProductId);
+++      return { product };
+++    },
+++  },
+++
+++  "cart/shipping-rates": {
+++    public: true,
+++    handler: async (ctx: RouteContext) => {
+++      const body = (ctx.input ?? {}) as { recipient?: RecipientAddress; items?: unknown };
+++      const items = validateCartItems(body.items);
+++      const recipient = (body.recipient ?? {}) as RecipientAddress;
+++      const settings = await getSettings(ctx);
+++      const rates = await getShippingRates(ctx, settings, recipient, items);
+++      return { rates };
+++    },
+++  },
+++
+++  "checkout/create-session": {
+++    public: true,
+++    handler: async (ctx: RouteContext) => {
+++      const settings = await getSettings(ctx);
+++      // Needs settings.siteOrigin, so settings load comes first; still runs
+++      // before any of the expensive Printful/Stripe work below.
+++      if (!validateOrigin(ctx.request, settings.siteOrigin)) throw PluginRouteError.forbidden("Invalid origin");
+++      if (!settings.printfulApiKey || !settings.stripeSecretKey) {
+++        throw PluginRouteError.badRequest("Store isn't configured yet.");
+++      }
+++
+++      const body = (ctx.input ?? {}) as { recipient?: RecipientAddress; items?: unknown; shippingRateId?: string };
+++      const items = validateCartItems(body.items);
+++      const recipient = (body.recipient ?? {}) as RecipientAddress;
+++      const shippingRateId = String(body.shippingRateId ?? "");
+++      if (!shippingRateId) throw PluginRouteError.badRequest("shippingRateId is required.");
+++
+++      // Server-side price computation — never trust price/amount from the request body.
+++      const cache = new Map<number, SyncProduct>();
+++      const resolved = await resolveCartProducts(ctx, settings, items, cache);
+++      const lineItems = resolved.map(({ product, variant, item }) => {
+++        if (variant.availabilityStatus !== AVAILABLE_STATUS) {
+++          throw PluginRouteError.badRequest(`${product.name} - ${variant.name} is no longer available.`);
+++        }
+++        const unitAmountCents = Math.round(parseFloat(variant.retailPrice) * 100);
+++        return { name: `${product.name} - ${variant.name}`, unitAmountCents, quantity: item.quantity };
+++      });
+++
+++      // Never trust a client-provided shipping amount either — match the
+++      // client's chosen shippingRateId against Printful's own quoted rates.
+++      const rates = await getShippingRates(ctx, settings, recipient, items);
+++      const rate = rates.find((r) => r.id === shippingRateId);
+++      if (!rate) throw PluginRouteError.badRequest("Invalid shipping option.");
+++      const shippingCents = Math.round(parseFloat(rate.rate) * 100);
+++
+++      const customer = await createStripeCustomer(ctx, settings, recipient);
+++      const metadata = {
+++        source: "ebt-store",
+++        cart: JSON.stringify(items),
+++        shippingRateId,
+++        recipient: JSON.stringify(recipient),
+++      };
+++      const session = await createCheckoutSession(ctx, settings, {
+++        customerId: customer.id,
+++        lineItems,
+++        shippingCents,
+++        shippingName: rate.name,
+++        metadata,
+++      });
+++      return { url: session.url };
+++    },
+++  },
+++
+++  "checkout/confirm": {
+++    public: true,
+++    handler: async (ctx: RouteContext) => {
+++      const body = (ctx.input ?? {}) as { sessionId?: string };
+++      const sessionId = String(body.sessionId ?? "").trim();
+++      if (!sessionId) throw PluginRouteError.badRequest("sessionId is required.");
+++
+++      // Idempotency: a client retry or double-call must not double-charge Printful.
+++      const existing = (await ctx.storage.orders.get(sessionId)) as OrderRecord | null;
+++      if (existing) return { status: "already", order: existing };
+++
+++      const settings = await getSettings(ctx);
+++      if (!settings.printfulApiKey || !settings.stripeSecretKey) {
+++        throw PluginRouteError.badRequest("Store isn't configured yet.");
+++      }
+++
+++      const session = await getCheckoutSession(ctx, settings, sessionId);
+++      if (session.payment_status !== "paid") throw PluginRouteError.badRequest("This payment hasn't completed.");
+++
+++      let cart: CartItem[];
+++      let recipient: RecipientAddress;
+++      let shippingRateId: string;
+++      try {
+++        cart = JSON.parse(session.metadata.cart);
+++        recipient = JSON.parse(session.metadata.recipient);
+++        shippingRateId = session.metadata.shippingRateId;
+++        if (!Array.isArray(cart) || cart.length === 0 || !recipient || !shippingRateId) throw new Error("missing metadata");
+++      } catch {
+++        throw PluginRouteError.badRequest("Unrecognized checkout session.");
+++      }
+++
+++      // Printful order creation (and re-deriving its line items) is wrapped
+++      // together: the customer already paid, so any failure here — including
+++      // a product/variant that vanished from Printful since checkout — must
+++      // be stored as a failed order for manual retry, never thrown as a 500
+++      // that would strand a paid order with no record at all.
+++      let status: OrderStatus;
+++      let printfulOrderId: number | null = null;
+++      let lastError: string | null = null;
+++      try {
+++        const cache = new Map<number, SyncProduct>();
+++        const resolved = await resolveCartProducts(ctx, settings, cart, cache);
+++        const orderItems = resolved.map(({ variant, item }) => ({
+++          syncVariantId: item.syncVariantId, quantity: item.quantity, retailPrice: variant.retailPrice,
+++        }));
+++        const result = await createPrintfulOrder(ctx, settings, {
+++          externalId: sessionId,
+++          recipient,
+++          items: orderItems,
+++          shippingRateId,
+++          confirm: true,
+++        });
+++        status = "fulfilled";
+++        printfulOrderId = result.id;
+++      } catch (err) {
+++        status = "failed";
+++        lastError = String(err);
+++      }
+++
+++      const now = new Date().toISOString();
+++      const record: OrderRecord = {
+++        sessionId,
+++        status,
+++        amountCents: session.amount_total,
+++        currency: session.currency,
+++        email: session.customer_details?.email ?? "",
+++        cart,
+++        shippingRateId,
+++        recipient,
+++        printfulOrderId,
+++        lastError,
+++        createdAt: now,
+++        updatedAt: now,
+++      };
+++      await ctx.storage.orders.put(sessionId, record as unknown as Record<string, unknown>);
+++      return { status: record.status, order: record };
+++    },
+++  },
+++};
++diff --git a/src/sandbox-entry.ts b/src/sandbox-entry.ts
++index 4ee5627..2f1ab46 100644
++--- a/src/sandbox-entry.ts
+++++ b/src/sandbox-entry.ts
++@@ -1,14 +1,15 @@
++ import { definePlugin } from "emdash";
++ import type { PluginContext } from "emdash";
++ import { DEFAULT_SETTINGS } from "./types.js";
++ import { settingsRoutes } from "./routes/settings.js";
+++import { storeRoutes } from "./routes/store.js";
++ 
++ export function createPlugin() {
++   return definePlugin({
++     id: "ebt-store",
++     version: "0.1.0",
++     capabilities: ["network:request", "email:send"],
++     allowedHosts: ["api.printful.com", "api.stripe.com"],
++     storage: {
++       orders: {
++         indexes: ["status", "createdAt", "email"],
++@@ -28,15 +29,16 @@ export function createPlugin() {
++           for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
++             if ((await ctx.kv.get(`settings:${key}`)) === null) {
++               await ctx.kv.set(`settings:${key}`, value);
++             }
++           }
++         },
++       },
++     },
++     routes: {
++       ...settingsRoutes,
+++      ...storeRoutes,
++     },
++   });
++ }
++ 
++ export default createPlugin;
++diff --git a/tests/helpers.ts b/tests/helpers.ts
++index 7d7815c..f73848d 100644
++--- a/tests/helpers.ts
+++++ b/tests/helpers.ts
++@@ -16,45 +16,52 @@ export function collection<T>() {
++         for (const [k, v] of Object.entries(opts.where)) {
++           items = items.filter((i) => (i.data as Record<string, unknown>)[k] === v);
++         }
++       }
++       if (opts?.limit) items = items.slice(0, opts.limit);
++       return { items, hasMore: false };
++     },
++   };
++ }
++ 
++-export function makeCtx(overrides: { settings?: Record<string, unknown> } = {}) {
+++export function makeCtx(overrides: { settings?: Record<string, unknown>; origin?: string | null } = {}) {
++   const kv = new Map<string, unknown>();
++   for (const [k, v] of Object.entries(overrides.settings ?? {})) {
++     kv.set(`settings:${k}`, v);
++   }
++   const orders = collection<OrderRecord>();
+++  // Defaults to the plugin's own DEFAULT_SETTINGS.siteOrigin so tests that
+++  // don't care about origin validation don't have to think about it.
+++  const origin = overrides.origin === undefined ? "https://everybittexas.com" : overrides.origin;
+++  const requestHeaders = new Headers();
+++  if (origin) requestHeaders.set("Origin", origin);
+++  const request = new Request("https://everybittexas.com/_emdash/plugins/ebt-store/route", { headers: requestHeaders });
++   return {
++     plugin: { id: "ebt-store", version: "0.1.0" },
++     storage: { orders },
++     kv: {
++       async get<T>(key: string) {
++         return kv.has(key) ? (kv.get(key) as T) : null;
++       },
++       async set(key: string, value: unknown) {
++         kv.set(key, value);
++       },
++     },
++     http: {
++       async fetch(url: string, init?: RequestInit) {
++         return globalThis.fetch(url, init);
++       },
++     },
++     log: { info: () => {}, error: () => {}, warn: () => {} },
++     site: { origin: "https://everybittexas.com" },
++     url: (path: string) => path,
+++    request,
++   };
++ }
++ 
++ export function mockFetch(handlers: { printful?: (url: string, init?: RequestInit) => Response; stripe?: (url: string, init?: RequestInit) => Response }) {
++   return vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
++     const u = String(url);
++     if (u.includes("api.printful.com") && handlers.printful) return Promise.resolve(handlers.printful(u, init as RequestInit));
++     if (u.includes("api.stripe.com") && handlers.stripe) return Promise.resolve(handlers.stripe(u, init as RequestInit));
++     return Promise.resolve(new Response(JSON.stringify({ error: "unmocked url: " + u }), { status: 500 }));
++   });
++diff --git a/tests/store.test.ts b/tests/store.test.ts
++new file mode 100644
++index 0000000..790be17
++--- /dev/null
+++++ b/tests/store.test.ts
++@@ -0,0 +1,230 @@
+++import { describe, it, expect } from "vitest";
+++import { vi } from "vitest";
+++import { storeRoutes } from "../src/routes/store.js";
+++import { makeCtx } from "./helpers.js";
+++import type { OrderRecord } from "../src/types.js";
+++
+++const configuredSettings = {
+++  printfulApiKey: "pf_test",
+++  printfulStoreId: "",
+++  stripeSecretKey: "sk_test",
+++  siteOrigin: "https://everybittexas.com",
+++};
+++
+++const recipient = {
+++  name: "Jo", email: "jo@x.test", address1: "1 Main", city: "Austin",
+++  stateCode: "TX", countryCode: "US", zip: "78701",
+++};
+++
+++function printfulProductResponse(overrides?: Partial<{ retailPrice: string; availabilityStatus: string }>) {
+++  return JSON.stringify({
+++    code: 200,
+++    result: {
+++      sync_product: { id: 13, name: "T-shirt" },
+++      sync_variants: [{
+++        id: 10, name: "Red / M", retail_price: overrides?.retailPrice ?? "29.99", currency: "USD",
+++        size: "M", color: "Red", availability_status: overrides?.availabilityStatus ?? "active",
+++        product: { image: "https://x/v.png" },
+++      }],
+++    },
+++  });
+++}
+++
+++function printfulRatesResponse() {
+++  return JSON.stringify({
+++    code: 200,
+++    result: { rates: [{ id: "STANDARD", name: "Standard", rate: "5.00", currency: "USD", minDeliveryDays: 5, maxDeliveryDays: 7 }] },
+++  });
+++}
+++
+++// Dispatches Printful mock responses by URL/method, and lets a test count or
+++// capture the /orders POST specifically (that's the fulfillment call whose
+++// idempotency and failure handling this file cares about most).
+++function printfulDispatcher(opts: {
+++  productOverrides?: Partial<{ retailPrice: string; availabilityStatus: string }>;
+++  onOrderCreate?: (init?: RequestInit) => Response;
+++  orderCallCounter?: { count: number };
+++}) {
+++  return (url: string, init?: RequestInit): Response => {
+++    if (url.includes("/store/products/")) return new Response(printfulProductResponse(opts.productOverrides), { status: 200 });
+++    if (url.includes("/store/products")) return new Response(JSON.stringify({ code: 200, result: [{ id: 13, name: "T-shirt", thumbnail_url: "https://x/t.png" }] }), { status: 200 });
+++    if (url.includes("/shipping/rates")) return new Response(printfulRatesResponse(), { status: 200 });
+++    if (url.includes("/orders")) {
+++      if (opts.orderCallCounter) opts.orderCallCounter.count += 1;
+++      if (opts.onOrderCreate) return opts.onOrderCreate(init);
+++      return new Response(JSON.stringify({ code: 200, result: { id: 555, status: "confirmed" } }), { status: 200 });
+++    }
+++    return new Response(JSON.stringify({ error: "unmocked printful url: " + url }), { status: 500 });
+++  };
+++}
+++
+++function stripeDispatcher(opts: {
+++  session?: Record<string, unknown>;
+++  onCheckoutSessionCreate?: (init?: RequestInit) => Response;
+++}) {
+++  return (url: string, init?: RequestInit): Response => {
+++    if (url.includes("/customers")) return new Response(JSON.stringify({ id: "cus_1" }), { status: 200 });
+++    if (url.includes("/checkout/sessions/")) {
+++      return new Response(JSON.stringify(opts.session ?? {
+++        id: "cs_1", payment_status: "paid", amount_total: 3499, currency: "usd",
+++        metadata: {}, customer_details: { email: "jo@x.test" },
+++      }), { status: 200 });
+++    }
+++    if (url.includes("/checkout/sessions")) {
+++      if (opts.onCheckoutSessionCreate) return opts.onCheckoutSessionCreate(init);
+++      return new Response(JSON.stringify({ id: "cs_1", url: "https://checkout.stripe.com/cs_1" }), { status: 200 });
+++    }
+++    return new Response(JSON.stringify({ error: "unmocked stripe url: " + url }), { status: 500 });
+++  };
+++}
+++
+++function mockGlobalFetch(printful: ReturnType<typeof printfulDispatcher>, stripe: ReturnType<typeof stripeDispatcher>) {
+++  return vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+++    const u = String(url);
+++    if (u.includes("api.printful.com")) return Promise.resolve(printful(u, init as RequestInit));
+++    if (u.includes("api.stripe.com")) return Promise.resolve(stripe(u, init as RequestInit));
+++    return Promise.resolve(new Response(JSON.stringify({ error: "unmocked url: " + u }), { status: 500 }));
+++  });
+++}
+++
+++const cart = [{ syncProductId: 13, syncVariantId: 10, quantity: 2 }];
+++
+++describe("products/list", () => {
+++  it("returns mapped products from a mocked Printful response", async () => {
+++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({}));
+++    const ctx = makeCtx({ settings: configuredSettings });
+++    const result = (await storeRoutes["products/list"].handler(ctx as never)) as { products: unknown };
+++    expect(result.products).toEqual([{ id: 13, name: "T-shirt", thumbnailUrl: "https://x/t.png" }]);
+++  });
+++});
+++
+++describe("products/get", () => {
+++  it("returns a product with variants", async () => {
+++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({}));
+++    const ctx = makeCtx({ settings: configuredSettings });
+++    const result = (await storeRoutes["products/get"].handler({ ...ctx, input: { syncProductId: 13 } } as never)) as { product: { variants: unknown[] } };
+++    expect(result.product.variants).toHaveLength(1);
+++    expect(result.product.variants[0]).toMatchObject({ id: 10, retailPrice: "29.99" });
+++  });
+++
+++  it("rejects a non-positive-integer syncProductId", async () => {
+++    const ctx = makeCtx({ settings: configuredSettings });
+++    await expect(
+++      storeRoutes["products/get"].handler({ ...ctx, input: { syncProductId: -1 } } as never),
+++    ).rejects.toMatchObject({ status: 400 });
+++  });
+++});
+++
+++describe("cart/shipping-rates", () => {
+++  it("returns rates for a valid cart", async () => {
+++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({}));
+++    const ctx = makeCtx({ settings: configuredSettings });
+++    const result = (await storeRoutes["cart/shipping-rates"].handler({ ...ctx, input: { recipient, items: cart } } as never)) as { rates: unknown[] };
+++    expect(result.rates).toEqual([{ id: "STANDARD", name: "Standard", rate: "5.00", currency: "USD", minDeliveryDays: 5, maxDeliveryDays: 7 }]);
+++  });
+++
+++  it("rejects an empty items array", async () => {
+++    const ctx = makeCtx({ settings: configuredSettings });
+++    await expect(
+++      storeRoutes["cart/shipping-rates"].handler({ ...ctx, input: { recipient, items: [] } } as never),
+++    ).rejects.toMatchObject({ status: 400 });
+++  });
+++});
+++
+++describe("checkout/create-session", () => {
+++  it("rejects an invalid origin", async () => {
+++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({}));
+++    const ctx = makeCtx({ settings: configuredSettings, origin: "https://evil.test" });
+++    await expect(
+++      storeRoutes["checkout/create-session"].handler({ ...ctx, input: { recipient, items: cart, shippingRateId: "STANDARD" } } as never),
+++    ).rejects.toMatchObject({ status: 403 });
+++  });
+++
+++  it("rejects when the store isn't configured", async () => {
+++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({}));
+++    const ctx = makeCtx({ settings: { printfulApiKey: "", stripeSecretKey: "", siteOrigin: "https://everybittexas.com" } });
+++    await expect(
+++      storeRoutes["checkout/create-session"].handler({ ...ctx, input: { recipient, items: cart, shippingRateId: "STANDARD" } } as never),
+++    ).rejects.toMatchObject({ status: 400 });
+++  });
+++
+++  it("rejects an unknown shippingRateId", async () => {
+++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({}));
+++    const ctx = makeCtx({ settings: configuredSettings });
+++    await expect(
+++      storeRoutes["checkout/create-session"].handler({ ...ctx, input: { recipient, items: cart, shippingRateId: "NOPE" } } as never),
+++    ).rejects.toMatchObject({ status: 400 });
+++  });
+++
+++  it("computes unit_amount server-side from Printful's retail_price, ignoring any client price, and returns { url }", async () => {
+++    let captured = "";
+++    mockGlobalFetch(
+++      printfulDispatcher({ productOverrides: { retailPrice: "29.99" } }),
+++      stripeDispatcher({ onCheckoutSessionCreate: (init) => { captured = String(init?.body); return new Response(JSON.stringify({ id: "cs_1", url: "https://checkout.stripe.com/cs_1" }), { status: 200 }); } }),
+++    );
+++    const ctx = makeCtx({ settings: configuredSettings });
+++    // Client-supplied price/amount fields, if any were sent, must be ignored.
+++    const maliciousItems = [{ syncProductId: 13, syncVariantId: 10, quantity: 2, retailPrice: "0.01" }];
+++    const result = (await storeRoutes["checkout/create-session"].handler(
+++      { ...ctx, input: { recipient, items: maliciousItems, shippingRateId: "STANDARD" } } as never,
+++    )) as { url: string };
+++    expect(result.url).toBe("https://checkout.stripe.com/cs_1");
+++    // 29.99 * 100 = 2999, quantity from cart is on the line item, not baked into unit_amount.
+++    expect(captured).toContain("line_items%5B0%5D%5Bprice_data%5D%5Bunit_amount%5D=2999");
+++    expect(captured).toContain("line_items%5B0%5D%5Bquantity%5D=2");
+++    // Shipping line item amount comes from the matched Printful rate (5.00 -> 500), not the client.
+++    expect(captured).toContain("line_items%5B1%5D%5Bprice_data%5D%5Bunit_amount%5D=500");
+++  });
+++});
+++
+++describe("checkout/confirm", () => {
+++  it("rejects an unpaid session", async () => {
+++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({ session: { id: "cs_unpaid", payment_status: "unpaid", amount_total: 3499, currency: "usd", metadata: {}, customer_details: null } }));
+++    const ctx = makeCtx({ settings: configuredSettings });
+++    await expect(
+++      storeRoutes["checkout/confirm"].handler({ ...ctx, input: { sessionId: "cs_unpaid" } } as never),
+++    ).rejects.toMatchObject({ status: 400 });
+++  });
+++
+++  it("on a paid session, calls createPrintfulOrder and stores a fulfilled OrderRecord; a second call is idempotent and does not re-hit Printful order creation", async () => {
+++    const orderCallCounter = { count: 0 };
+++    const metadata = { source: "ebt-store", cart: JSON.stringify(cart), shippingRateId: "STANDARD", recipient: JSON.stringify(recipient) };
+++    mockGlobalFetch(
+++      printfulDispatcher({ orderCallCounter }),
+++      stripeDispatcher({ session: { id: "cs_paid", payment_status: "paid", amount_total: 6498, currency: "usd", metadata, customer_details: { email: "jo@x.test" } } }),
+++    );
+++    const ctx = makeCtx({ settings: configuredSettings });
+++
+++    const first = (await storeRoutes["checkout/confirm"].handler({ ...ctx, input: { sessionId: "cs_paid" } } as never)) as { status: string; order: OrderRecord };
+++    expect(first.status).toBe("fulfilled");
+++    expect(first.order.printfulOrderId).toBe(555);
+++    expect(first.order.lastError).toBeNull();
+++    expect(orderCallCounter.count).toBe(1);
+++
+++    const second = (await storeRoutes["checkout/confirm"].handler({ ...ctx, input: { sessionId: "cs_paid" } } as never)) as { status: string; order: OrderRecord };
+++    expect(second.status).toBe("already");
+++    expect(orderCallCounter.count).toBe(1); // no re-hit of Printful order creation
+++  });
+++
+++  it("on a Printful failure, stores a failed OrderRecord with lastError set and does not throw", async () => {
+++    const metadata = { source: "ebt-store", cart: JSON.stringify(cart), shippingRateId: "STANDARD", recipient: JSON.stringify(recipient) };
+++    mockGlobalFetch(
+++      printfulDispatcher({ onOrderCreate: () => new Response(JSON.stringify({ error: "Out of stock" }), { status: 400 }) }),
+++      stripeDispatcher({ session: { id: "cs_fail", payment_status: "paid", amount_total: 6498, currency: "usd", metadata, customer_details: { email: "jo@x.test" } } }),
+++    );
+++    const ctx = makeCtx({ settings: configuredSettings });
+++
+++    const result = (await storeRoutes["checkout/confirm"].handler({ ...ctx, input: { sessionId: "cs_fail" } } as never)) as { status: string; order: OrderRecord };
+++    expect(result.status).toBe("failed");
+++    expect(result.order.printfulOrderId).toBeNull();
+++    expect(result.order.lastError).toBeTruthy();
+++  });
+++
+++  it("rejects an unrecognized session (missing/unparseable metadata)", async () => {
+++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({ session: { id: "cs_bad", payment_status: "paid", amount_total: 100, currency: "usd", metadata: {}, customer_details: null } }));
+++    const ctx = makeCtx({ settings: configuredSettings });
+++    await expect(
+++      storeRoutes["checkout/confirm"].handler({ ...ctx, input: { sessionId: "cs_bad" } } as never),
+++    ).rejects.toMatchObject({ status: 400 });
+++  });
+++});
+diff --git a/.superpowers/sdd/task-5-report.md b/.superpowers/sdd/task-5-report.md
+new file mode 100644
+index 0000000..049ccfa
+--- /dev/null
++++ b/.superpowers/sdd/task-5-report.md
+@@ -0,0 +1,84 @@
++# Task 5 report: Storefront routes (products, shipping rates, checkout, confirm)
++
++## Summary
++
++Implemented `src/routes/store.ts` exporting `storeRoutes` with five public
++routes — `products/list`, `products/get`, `cart/shipping-rates`,
++`checkout/create-session`, `checkout/confirm` — wired into
++`src/sandbox-entry.ts` alongside `settingsRoutes`. All server-side price and
++shipping computation is derived from Printful/Stripe responses, never from
++client input. Confirmation is idempotent via `ctx.storage.orders`, keyed by
++Stripe Checkout Session id, per the precedent in
++`emdash-plugin-petition/src/routes/donate.ts`.
++
++## Files touched
++
++- Created: `C:\ebt-emdash\emdash-plugin-store\src\routes\store.ts`
++- Created: `C:\ebt-emdash\emdash-plugin-store\tests\store.test.ts`
++- Modified: `C:\ebt-emdash\emdash-plugin-store\src\sandbox-entry.ts` (import + spread `storeRoutes`)
++- Modified: `C:\ebt-emdash\emdash-plugin-store\tests\helpers.ts` (`makeCtx` now returns a `request: Request` with a configurable `Origin` header, defaulting to `"https://everybittexas.com"` — the plugin's own `DEFAULT_SETTINGS.siteOrigin` — so existing tests that don't care about origin are unaffected)
++
++## Precedent read and followed
++
++- `emdash-plugin-petition/src/routes/donate.ts` — no-webhook / confirm-by-session-id pattern, `try/catch` around the post-payment fulfillment call so a fulfillment failure never throws a 500 to a customer who already paid.
++- `emdash-plugin-petition/src/routes/signSubmit.ts` — `validateOrigin`/`hostAllowed` shape (checks `Origin` header, falls back to `Referer`, allows localhost for local dev).
++
++## Deviations from the brief, with reasoning (flagging per crewcut, not silently deciding)
++
++1. **`validateOrigin` signature takes `siteOrigin` as a second argument**, unlike petition's single-arg `validateOrigin(request)`. Petition's version checks against a hardcoded `ALLOWED_ORIGIN_HOSTS` set; this plugin has no such hardcoded set — the brief itself says the copy should be "hostAllowed-against-settings.siteOrigin," which is a per-install configurable value, not a constant. There's no way to thread that into a single-arg function without a module-level side channel, which would be worse. I resolved this by loading `settings` first in `checkout/create-session` and calling `validateOrigin(ctx.request, settings.siteOrigin)` as literally the first check afterward — before the missing-config check and all Printful/Stripe calls, so it's still "first" in the sense of "before any expensive work," even though the brief's bullet list showed "validateOrigin" and "load settings" as two separate top-level steps. Other reading: keep `validateOrigin(request)` single-arg and hardcode an `ALLOWED_ORIGIN_HOSTS`-equivalent constant in `store.ts`, mirroring petition even more literally — I judged this wrong for this plugin since `siteOrigin` is already a first-class configurable setting field (`PluginSettings.siteOrigin`) that exists specifically for this purpose.
++
++2. **`checkout/confirm`'s try/catch scope is wider than literally described.** The brief scopes the try/catch narrowly around `createPrintfulOrder(...)` itself. I put the entire "re-derive Printful order items via `getSyncProduct`" step inside the same try/catch as the `createPrintfulOrder` call, sharing the loop/caching helper (`resolveCartProducts`) with `checkout/create-session`. Reasoning: if a product/variant was deleted from Printful between checkout and confirm, `getSyncProduct` or the variant-lookup would throw — and per the brief's own stated rationale ("the customer already paid; a thrown 500 here would strand a paid order with no record at all"), that failure needs the exact same `status: "failed"` / `lastError` treatment as a `createPrintfulOrder` failure, not an uncaught 500. Covered by the "Printful failure" test, though that test exercises failure via the `/orders` endpoint rejecting rather than a missing product — the code path for a missing-product failure is the same catch block, just not separately asserted.
++
++3. **No `printfulApiKey`/`stripeSecretKey` configured-check on `products/list`, `products/get`, or `cart/shipping-rates`.** The brief only specifies this check for routes 4 and 5 ("same missing-config check as route 4"). If Printful isn't configured, `listSyncProducts`/`getSyncProduct`/`getShippingRates` will throw a raw `PrintfulApiError` (likely a 401) rather than a clean `PluginRouteError.badRequest("Store isn't configured yet.")`. I left this as-is rather than add an unrequested check, since the brief was specific about which routes get it — flagging in case that's an oversight in the brief rather than an intentional omission (an unconfigured store's catalog page would surface a less friendly error than the checkout routes do).
++
++## TDD evidence
++
++1. Wrote `tests/store.test.ts` importing `storeRoutes` from `../src/routes/store.js` (didn't exist yet) and ran:
++   ```
++   pnpm test -- store
++   ```
++   Result: failed as expected —
++   ```
++   Error: Cannot find module '../src/routes/store.js' imported from .../tests/store.test.ts
++   Test Files  1 failed | 4 passed (5)
++   ```
++2. Implemented `src/routes/store.ts`, wired into `src/sandbox-entry.ts`.
++3. Re-ran `pnpm test -- store`: `Test Files 5 passed (5)`, `Tests 31 passed (31)`.
++4. Ran full suite `pnpm test`: `Test Files 5 passed (5)`, `Tests 31 passed (31)` — no regressions in scaffold/settings/printful/stripe tests.
++5. Ran `pnpm typecheck` (`tsc --noEmit`): clean, no errors.
++
++### Test cases in `tests/store.test.ts` (13 new tests)
++
++- `products/list` returns mapped products from a mocked Printful response.
++- `products/get` returns a product with variants; rejects a non-positive-integer `syncProductId`.
++- `cart/shipping-rates` returns rates for a valid cart; rejects an empty `items` array.
++- `checkout/create-session`: rejects an invalid origin (403); rejects when the store isn't configured (400); rejects an unknown `shippingRateId` (400); computes `unit_amount` from Printful's `retail_price` while a malicious client-supplied `retailPrice` field on the cart item is ignored, and asserts the captured Stripe request body's `unit_amount` for both the product line item (2999, from 29.99) and the shipping line item (500, from Printful's quoted 5.00 rate, not any client value); returns `{ url }` on success.
++- `checkout/confirm`: rejects an unpaid session (400); on a paid session calls `createPrintfulOrder` and stores a `fulfilled` `OrderRecord`, then a second call with the same `sessionId` returns `{status:"already"}` without incrementing the Printful order-creation call counter (asserted at exactly 1 across both calls); on a Printful failure (mocked 400 from `/orders`) stores a `failed` `OrderRecord` with `lastError` set and the call does **not** throw; rejects a session whose metadata is missing/unparseable ("Unrecognized checkout session").
++
++## Self-review
++
++- Confirmed `RouteContext` from the installed `emdash@0.30.0` package (`node_modules/emdash/dist/types-BvB7gDOD.d.mts`) has `request: Request` as a required (non-optional) field, matching the brief's assumption — no discrepancy found there.
++- Confirmed `PluginRouteError` (`node_modules/emdash/dist/index-wYnC6u4o.d.mts`) has a public `status: number` field with `badRequest`→400, `forbidden`→403, matching what the tests assert via `toMatchObject({ status: ... })`.
++- Did not modify any signatures in `src/lib/printful.ts` or `src/lib/stripe.ts`.
++- Did not touch `src/routes/settings.ts`, `src/settings.ts`, or any test file other than adding `tests/store.test.ts` and the minimal `tests/helpers.ts` diff described above.
++- `resolveCartProducts` helper is shared between `checkout/create-session` and `checkout/confirm` specifically because both need identical "fetch each unique `syncProductId` once, find the variant" logic — avoided duplicating that loop.
++
++## Commit
++
++```
++835d50c feat(store): add storefront routes (products, shipping, checkout, confirm)
++```
++
++## Fix: clean 400 for unknown product in `checkout/create-session` (review follow-up)
++
++**Finding:** In `resolveCartProducts`, an unknown/deleted `syncProductId` let `getSyncProduct`'s raw `PrintfulApiError` (on a Printful 404) escape uncaught, surfacing as a generic 500 from `checkout/create-session` instead of `PluginRouteError.badRequest`. The variant-not-found half of the same function already wrapped correctly; only the product-fetch half was missing it.
++
++**Fix:** Wrapped the `getSyncProduct(...)` call inside `resolveCartProducts`'s loop in a try/catch that rethrows `PluginRouteError.badRequest(\`Product ${item.syncProductId} not found.\`)`, mirroring the existing `Variant ${item.syncVariantId} not found.` convention right below it. Fixed in the shared function (root cause, one call site) rather than duplicating a guard at each caller — safe for `checkout/confirm` too, since `confirm` already wraps its entire `resolveCartProducts` call in a try/catch that catches any error type and records it as a `failed` `OrderRecord` (`status`/idempotency semantics unchanged; only the stored `lastError` message text now reads more cleanly).
++
++**TDD evidence:**
++- Added `checkout/create-session` › "returns a clean 400 (not a raw PrintfulApiError) for an unknown/deleted syncProductId" to `tests/store.test.ts`, mocking `/store/products/:id` as a 404.
++- `pnpm exec vitest run tests/store.test.ts`: `Test Files 1 passed (1)`, `Tests 14 passed (14)` (13 → 14).
++- `pnpm test` (full suite): `Test Files 5 passed (5)`, `Tests 32 passed (32)` (31 → 32, no regressions).
++- `pnpm exec tsc --noEmit`: clean, no output.
++
++Commit: `fix(store): return clean 400 for unknown product in checkout/create-session`
+diff --git a/src/routes/store.ts b/src/routes/store.ts
+new file mode 100644
+index 0000000..096a591
+--- /dev/null
++++ b/src/routes/store.ts
+@@ -0,0 +1,257 @@
++import { PluginRouteError } from "emdash";
++import type { RouteContext } from "emdash";
++import type { CartItem, OrderRecord, OrderStatus, RecipientAddress } from "../types.js";
++import { getSettings } from "../settings.js";
++import { createPrintfulOrder, getShippingRates, getSyncProduct, listSyncProducts } from "../lib/printful.js";
++import { createCheckoutSession, createStripeCustomer, getCheckoutSession } from "../lib/stripe.js";
++
++const MAX_ITEMS = 50;
++const MAX_QTY = 20;
++// Printful's known-good availability value seen in the API docs/fixtures.
++// crewcut: allowlist of one rather than a denylist of every discontinued/out
++// of stock string Printful might return — brief calls for rejecting anything
++// that isn't exactly this, not guessing at the full enum.
++const AVAILABLE_STATUS = "active";
++
++type SyncProduct = Awaited<ReturnType<typeof getSyncProduct>>;
++
++// Local copy of emdash-plugin-petition's signSubmit.ts validateOrigin/hostAllowed,
++// adapted because this plugin has no hardcoded allowed-host set — the allowed
++// host is this store's own configurable settings.siteOrigin instead.
++function hostAllowed(value: string, siteOrigin: string): boolean {
++  try {
++    const host = new URL(value).host.toLowerCase();
++    const allowedHost = new URL(siteOrigin).host.toLowerCase();
++    return host === allowedHost || host === "localhost" || host.startsWith("localhost:") || host.endsWith(".localhost");
++  } catch {
++    return false;
++  }
++}
++
++function validateOrigin(request: Request, siteOrigin: string): boolean {
++  const origin = request.headers.get("Origin");
++  if (origin) return hostAllowed(origin, siteOrigin);
++  const referer = request.headers.get("Referer");
++  return referer ? hostAllowed(referer, siteOrigin) : false;
++}
++
++// Sanity bounds only (mirrors donate.ts's MIN_CENTS/MAX_CENTS style), not
++// exhaustive validation of cart contents.
++function validateCartItems(items: unknown): CartItem[] {
++  if (!Array.isArray(items) || items.length === 0) {
++    throw PluginRouteError.badRequest("At least one cart item is required.");
++  }
++  if (items.length > MAX_ITEMS) {
++    throw PluginRouteError.badRequest(`Cart cannot have more than ${MAX_ITEMS} items.`);
++  }
++  return items.map((raw) => {
++    const item = (raw ?? {}) as Partial<CartItem>;
++    const syncProductId = Number(item.syncProductId);
++    const syncVariantId = Number(item.syncVariantId);
++    const quantity = Number(item.quantity);
++    if (!Number.isInteger(syncProductId) || syncProductId <= 0) {
++      throw PluginRouteError.badRequest("Invalid syncProductId.");
++    }
++    if (!Number.isInteger(syncVariantId) || syncVariantId <= 0) {
++      throw PluginRouteError.badRequest("Invalid syncVariantId.");
++    }
++    if (!Number.isInteger(quantity) || quantity <= 0 || quantity > MAX_QTY) {
++      throw PluginRouteError.badRequest(`Quantity must be between 1 and ${MAX_QTY}.`);
++    }
++    return { syncProductId, syncVariantId, quantity };
++  });
++}
++
++// Fetches each unique syncProductId in `items` at most once via `cache`, and
++// resolves the priced Stripe line items for them. Used by both
++// checkout/create-session (pricing) and checkout/confirm (re-deriving
++// Printful order items) so a cart spanning the same product isn't refetched.
++async function resolveCartProducts(
++  ctx: RouteContext, settings: Awaited<ReturnType<typeof getSettings>>, items: CartItem[], cache: Map<number, SyncProduct>,
++): Promise<Array<{ product: SyncProduct; variant: SyncProduct["variants"][number]; item: CartItem }>> {
++  const resolved: Array<{ product: SyncProduct; variant: SyncProduct["variants"][number]; item: CartItem }> = [];
++  for (const item of items) {
++    let product = cache.get(item.syncProductId);
++    if (!product) {
++      try {
++        product = await getSyncProduct(ctx, settings, item.syncProductId);
++      } catch {
++        throw PluginRouteError.badRequest(`Product ${item.syncProductId} not found.`);
++      }
++      cache.set(item.syncProductId, product);
++    }
++    const variant = product.variants.find((v) => v.id === item.syncVariantId);
++    if (!variant) throw PluginRouteError.badRequest(`Variant ${item.syncVariantId} not found.`);
++    resolved.push({ product, variant, item });
++  }
++  return resolved;
++}
++
++export const storeRoutes = {
++  "products/list": {
++    public: true,
++    handler: async (ctx: RouteContext) => {
++      const settings = await getSettings(ctx);
++      const products = await listSyncProducts(ctx, settings);
++      return { products };
++    },
++  },
++
++  "products/get": {
++    public: true,
++    handler: async (ctx: RouteContext) => {
++      const body = (ctx.input ?? {}) as { syncProductId?: number };
++      const syncProductId = Number(body.syncProductId);
++      if (!Number.isInteger(syncProductId) || syncProductId <= 0) {
++        throw PluginRouteError.badRequest("syncProductId must be a positive integer.");
++      }
++      const settings = await getSettings(ctx);
++      const product = await getSyncProduct(ctx, settings, syncProductId);
++      return { product };
++    },
++  },
++
++  "cart/shipping-rates": {
++    public: true,
++    handler: async (ctx: RouteContext) => {
++      const body = (ctx.input ?? {}) as { recipient?: RecipientAddress; items?: unknown };
++      const items = validateCartItems(body.items);
++      const recipient = (body.recipient ?? {}) as RecipientAddress;
++      const settings = await getSettings(ctx);
++      const rates = await getShippingRates(ctx, settings, recipient, items);
++      return { rates };
++    },
++  },
++
++  "checkout/create-session": {
++    public: true,
++    handler: async (ctx: RouteContext) => {
++      const settings = await getSettings(ctx);
++      // Needs settings.siteOrigin, so settings load comes first; still runs
++      // before any of the expensive Printful/Stripe work below.
++      if (!validateOrigin(ctx.request, settings.siteOrigin)) throw PluginRouteError.forbidden("Invalid origin");
++      if (!settings.printfulApiKey || !settings.stripeSecretKey) {
++        throw PluginRouteError.badRequest("Store isn't configured yet.");
++      }
++
++      const body = (ctx.input ?? {}) as { recipient?: RecipientAddress; items?: unknown; shippingRateId?: string };
++      const items = validateCartItems(body.items);
++      const recipient = (body.recipient ?? {}) as RecipientAddress;
++      const shippingRateId = String(body.shippingRateId ?? "");
++      if (!shippingRateId) throw PluginRouteError.badRequest("shippingRateId is required.");
++
++      // Server-side price computation — never trust price/amount from the request body.
++      const cache = new Map<number, SyncProduct>();
++      const resolved = await resolveCartProducts(ctx, settings, items, cache);
++      const lineItems = resolved.map(({ product, variant, item }) => {
++        if (variant.availabilityStatus !== AVAILABLE_STATUS) {
++          throw PluginRouteError.badRequest(`${product.name} - ${variant.name} is no longer available.`);
++        }
++        const unitAmountCents = Math.round(parseFloat(variant.retailPrice) * 100);
++        return { name: `${product.name} - ${variant.name}`, unitAmountCents, quantity: item.quantity };
++      });
++
++      // Never trust a client-provided shipping amount either — match the
++      // client's chosen shippingRateId against Printful's own quoted rates.
++      const rates = await getShippingRates(ctx, settings, recipient, items);
++      const rate = rates.find((r) => r.id === shippingRateId);
++      if (!rate) throw PluginRouteError.badRequest("Invalid shipping option.");
++      const shippingCents = Math.round(parseFloat(rate.rate) * 100);
++
++      const customer = await createStripeCustomer(ctx, settings, recipient);
++      const metadata = {
++        source: "ebt-store",
++        cart: JSON.stringify(items),
++        shippingRateId,
++        recipient: JSON.stringify(recipient),
++      };
++      const session = await createCheckoutSession(ctx, settings, {
++        customerId: customer.id,
++        lineItems,
++        shippingCents,
++        shippingName: rate.name,
++        metadata,
++      });
++      return { url: session.url };
++    },
++  },
++
++  "checkout/confirm": {
++    public: true,
++    handler: async (ctx: RouteContext) => {
++      const body = (ctx.input ?? {}) as { sessionId?: string };
++      const sessionId = String(body.sessionId ?? "").trim();
++      if (!sessionId) throw PluginRouteError.badRequest("sessionId is required.");
++
++      // Idempotency: a client retry or double-call must not double-charge Printful.
++      const existing = (await ctx.storage.orders.get(sessionId)) as OrderRecord | null;
++      if (existing) return { status: "already", order: existing };
++
++      const settings = await getSettings(ctx);
++      if (!settings.printfulApiKey || !settings.stripeSecretKey) {
++        throw PluginRouteError.badRequest("Store isn't configured yet.");
++      }
++
++      const session = await getCheckoutSession(ctx, settings, sessionId);
++      if (session.payment_status !== "paid") throw PluginRouteError.badRequest("This payment hasn't completed.");
++
++      let cart: CartItem[];
++      let recipient: RecipientAddress;
++      let shippingRateId: string;
++      try {
++        cart = JSON.parse(session.metadata.cart);
++        recipient = JSON.parse(session.metadata.recipient);
++        shippingRateId = session.metadata.shippingRateId;
++        if (!Array.isArray(cart) || cart.length === 0 || !recipient || !shippingRateId) throw new Error("missing metadata");
++      } catch {
++        throw PluginRouteError.badRequest("Unrecognized checkout session.");
++      }
++
++      // Printful order creation (and re-deriving its line items) is wrapped
++      // together: the customer already paid, so any failure here — including
++      // a product/variant that vanished from Printful since checkout — must
++      // be stored as a failed order for manual retry, never thrown as a 500
++      // that would strand a paid order with no record at all.
++      let status: OrderStatus;
++      let printfulOrderId: number | null = null;
++      let lastError: string | null = null;
++      try {
++        const cache = new Map<number, SyncProduct>();
++        const resolved = await resolveCartProducts(ctx, settings, cart, cache);
++        const orderItems = resolved.map(({ variant, item }) => ({
++          syncVariantId: item.syncVariantId, quantity: item.quantity, retailPrice: variant.retailPrice,
++        }));
++        const result = await createPrintfulOrder(ctx, settings, {
++          externalId: sessionId,
++          recipient,
++          items: orderItems,
++          shippingRateId,
++          confirm: true,
++        });
++        status = "fulfilled";
++        printfulOrderId = result.id;
++      } catch (err) {
++        status = "failed";
++        lastError = String(err);
++      }
++
++      const now = new Date().toISOString();
++      const record: OrderRecord = {
++        sessionId,
++        status,
++        amountCents: session.amount_total,
++        currency: session.currency,
++        email: session.customer_details?.email ?? "",
++        cart,
++        shippingRateId,
++        recipient,
++        printfulOrderId,
++        lastError,
++        createdAt: now,
++        updatedAt: now,
++      };
++      await ctx.storage.orders.put(sessionId, record as unknown as Record<string, unknown>);
++      return { status: record.status, order: record };
++    },
++  },
++};
+diff --git a/src/sandbox-entry.ts b/src/sandbox-entry.ts
+index 4ee5627..2f1ab46 100644
+--- a/src/sandbox-entry.ts
++++ b/src/sandbox-entry.ts
+@@ -1,14 +1,15 @@
+ import { definePlugin } from "emdash";
+ import type { PluginContext } from "emdash";
+ import { DEFAULT_SETTINGS } from "./types.js";
+ import { settingsRoutes } from "./routes/settings.js";
++import { storeRoutes } from "./routes/store.js";
+ 
+ export function createPlugin() {
+   return definePlugin({
+     id: "ebt-store",
+     version: "0.1.0",
+     capabilities: ["network:request", "email:send"],
+     allowedHosts: ["api.printful.com", "api.stripe.com"],
+     storage: {
+       orders: {
+         indexes: ["status", "createdAt", "email"],
+@@ -28,15 +29,16 @@ export function createPlugin() {
+           for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
+             if ((await ctx.kv.get(`settings:${key}`)) === null) {
+               await ctx.kv.set(`settings:${key}`, value);
+             }
+           }
+         },
+       },
+     },
+     routes: {
+       ...settingsRoutes,
++      ...storeRoutes,
+     },
+   });
+ }
+ 
+ export default createPlugin;
+diff --git a/tests/helpers.ts b/tests/helpers.ts
+index 7d7815c..f73848d 100644
+--- a/tests/helpers.ts
++++ b/tests/helpers.ts
+@@ -16,45 +16,52 @@ export function collection<T>() {
+         for (const [k, v] of Object.entries(opts.where)) {
+           items = items.filter((i) => (i.data as Record<string, unknown>)[k] === v);
+         }
+       }
+       if (opts?.limit) items = items.slice(0, opts.limit);
+       return { items, hasMore: false };
+     },
+   };
+ }
+ 
+-export function makeCtx(overrides: { settings?: Record<string, unknown> } = {}) {
++export function makeCtx(overrides: { settings?: Record<string, unknown>; origin?: string | null } = {}) {
+   const kv = new Map<string, unknown>();
+   for (const [k, v] of Object.entries(overrides.settings ?? {})) {
+     kv.set(`settings:${k}`, v);
+   }
+   const orders = collection<OrderRecord>();
++  // Defaults to the plugin's own DEFAULT_SETTINGS.siteOrigin so tests that
++  // don't care about origin validation don't have to think about it.
++  const origin = overrides.origin === undefined ? "https://everybittexas.com" : overrides.origin;
++  const requestHeaders = new Headers();
++  if (origin) requestHeaders.set("Origin", origin);
++  const request = new Request("https://everybittexas.com/_emdash/plugins/ebt-store/route", { headers: requestHeaders });
+   return {
+     plugin: { id: "ebt-store", version: "0.1.0" },
+     storage: { orders },
+     kv: {
+       async get<T>(key: string) {
+         return kv.has(key) ? (kv.get(key) as T) : null;
+       },
+       async set(key: string, value: unknown) {
+         kv.set(key, value);
+       },
+     },
+     http: {
+       async fetch(url: string, init?: RequestInit) {
+         return globalThis.fetch(url, init);
+       },
+     },
+     log: { info: () => {}, error: () => {}, warn: () => {} },
+     site: { origin: "https://everybittexas.com" },
+     url: (path: string) => path,
++    request,
+   };
+ }
+ 
+ export function mockFetch(handlers: { printful?: (url: string, init?: RequestInit) => Response; stripe?: (url: string, init?: RequestInit) => Response }) {
+   return vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+     const u = String(url);
+     if (u.includes("api.printful.com") && handlers.printful) return Promise.resolve(handlers.printful(u, init as RequestInit));
+     if (u.includes("api.stripe.com") && handlers.stripe) return Promise.resolve(handlers.stripe(u, init as RequestInit));
+     return Promise.resolve(new Response(JSON.stringify({ error: "unmocked url: " + u }), { status: 500 }));
+   });
+diff --git a/tests/store.test.ts b/tests/store.test.ts
+new file mode 100644
+index 0000000..1542851
+--- /dev/null
++++ b/tests/store.test.ts
+@@ -0,0 +1,244 @@
++import { describe, it, expect } from "vitest";
++import { vi } from "vitest";
++import { storeRoutes } from "../src/routes/store.js";
++import { makeCtx } from "./helpers.js";
++import type { OrderRecord } from "../src/types.js";
++
++const configuredSettings = {
++  printfulApiKey: "pf_test",
++  printfulStoreId: "",
++  stripeSecretKey: "sk_test",
++  siteOrigin: "https://everybittexas.com",
++};
++
++const recipient = {
++  name: "Jo", email: "jo@x.test", address1: "1 Main", city: "Austin",
++  stateCode: "TX", countryCode: "US", zip: "78701",
++};
++
++function printfulProductResponse(overrides?: Partial<{ retailPrice: string; availabilityStatus: string }>) {
++  return JSON.stringify({
++    code: 200,
++    result: {
++      sync_product: { id: 13, name: "T-shirt" },
++      sync_variants: [{
++        id: 10, name: "Red / M", retail_price: overrides?.retailPrice ?? "29.99", currency: "USD",
++        size: "M", color: "Red", availability_status: overrides?.availabilityStatus ?? "active",
++        product: { image: "https://x/v.png" },
++      }],
++    },
++  });
++}
++
++function printfulRatesResponse() {
++  return JSON.stringify({
++    code: 200,
++    result: { rates: [{ id: "STANDARD", name: "Standard", rate: "5.00", currency: "USD", minDeliveryDays: 5, maxDeliveryDays: 7 }] },
++  });
++}
++
++// Dispatches Printful mock responses by URL/method, and lets a test count or
++// capture the /orders POST specifically (that's the fulfillment call whose
++// idempotency and failure handling this file cares about most).
++function printfulDispatcher(opts: {
++  productOverrides?: Partial<{ retailPrice: string; availabilityStatus: string }>;
++  onOrderCreate?: (init?: RequestInit) => Response;
++  orderCallCounter?: { count: number };
++}) {
++  return (url: string, init?: RequestInit): Response => {
++    if (url.includes("/store/products/")) return new Response(printfulProductResponse(opts.productOverrides), { status: 200 });
++    if (url.includes("/store/products")) return new Response(JSON.stringify({ code: 200, result: [{ id: 13, name: "T-shirt", thumbnail_url: "https://x/t.png" }] }), { status: 200 });
++    if (url.includes("/shipping/rates")) return new Response(printfulRatesResponse(), { status: 200 });
++    if (url.includes("/orders")) {
++      if (opts.orderCallCounter) opts.orderCallCounter.count += 1;
++      if (opts.onOrderCreate) return opts.onOrderCreate(init);
++      return new Response(JSON.stringify({ code: 200, result: { id: 555, status: "confirmed" } }), { status: 200 });
++    }
++    return new Response(JSON.stringify({ error: "unmocked printful url: " + url }), { status: 500 });
++  };
++}
++
++function stripeDispatcher(opts: {
++  session?: Record<string, unknown>;
++  onCheckoutSessionCreate?: (init?: RequestInit) => Response;
++}) {
++  return (url: string, init?: RequestInit): Response => {
++    if (url.includes("/customers")) return new Response(JSON.stringify({ id: "cus_1" }), { status: 200 });
++    if (url.includes("/checkout/sessions/")) {
++      return new Response(JSON.stringify(opts.session ?? {
++        id: "cs_1", payment_status: "paid", amount_total: 3499, currency: "usd",
++        metadata: {}, customer_details: { email: "jo@x.test" },
++      }), { status: 200 });
++    }
++    if (url.includes("/checkout/sessions")) {
++      if (opts.onCheckoutSessionCreate) return opts.onCheckoutSessionCreate(init);
++      return new Response(JSON.stringify({ id: "cs_1", url: "https://checkout.stripe.com/cs_1" }), { status: 200 });
++    }
++    return new Response(JSON.stringify({ error: "unmocked stripe url: " + url }), { status: 500 });
++  };
++}
++
++function mockGlobalFetch(printful: ReturnType<typeof printfulDispatcher>, stripe: ReturnType<typeof stripeDispatcher>) {
++  return vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
++    const u = String(url);
++    if (u.includes("api.printful.com")) return Promise.resolve(printful(u, init as RequestInit));
++    if (u.includes("api.stripe.com")) return Promise.resolve(stripe(u, init as RequestInit));
++    return Promise.resolve(new Response(JSON.stringify({ error: "unmocked url: " + u }), { status: 500 }));
++  });
++}
++
++const cart = [{ syncProductId: 13, syncVariantId: 10, quantity: 2 }];
++
++describe("products/list", () => {
++  it("returns mapped products from a mocked Printful response", async () => {
++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({}));
++    const ctx = makeCtx({ settings: configuredSettings });
++    const result = (await storeRoutes["products/list"].handler(ctx as never)) as { products: unknown };
++    expect(result.products).toEqual([{ id: 13, name: "T-shirt", thumbnailUrl: "https://x/t.png" }]);
++  });
++});
++
++describe("products/get", () => {
++  it("returns a product with variants", async () => {
++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({}));
++    const ctx = makeCtx({ settings: configuredSettings });
++    const result = (await storeRoutes["products/get"].handler({ ...ctx, input: { syncProductId: 13 } } as never)) as { product: { variants: unknown[] } };
++    expect(result.product.variants).toHaveLength(1);
++    expect(result.product.variants[0]).toMatchObject({ id: 10, retailPrice: "29.99" });
++  });
++
++  it("rejects a non-positive-integer syncProductId", async () => {
++    const ctx = makeCtx({ settings: configuredSettings });
++    await expect(
++      storeRoutes["products/get"].handler({ ...ctx, input: { syncProductId: -1 } } as never),
++    ).rejects.toMatchObject({ status: 400 });
++  });
++});
++
++describe("cart/shipping-rates", () => {
++  it("returns rates for a valid cart", async () => {
++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({}));
++    const ctx = makeCtx({ settings: configuredSettings });
++    const result = (await storeRoutes["cart/shipping-rates"].handler({ ...ctx, input: { recipient, items: cart } } as never)) as { rates: unknown[] };
++    expect(result.rates).toEqual([{ id: "STANDARD", name: "Standard", rate: "5.00", currency: "USD", minDeliveryDays: 5, maxDeliveryDays: 7 }]);
++  });
++
++  it("rejects an empty items array", async () => {
++    const ctx = makeCtx({ settings: configuredSettings });
++    await expect(
++      storeRoutes["cart/shipping-rates"].handler({ ...ctx, input: { recipient, items: [] } } as never),
++    ).rejects.toMatchObject({ status: 400 });
++  });
++});
++
++describe("checkout/create-session", () => {
++  it("rejects an invalid origin", async () => {
++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({}));
++    const ctx = makeCtx({ settings: configuredSettings, origin: "https://evil.test" });
++    await expect(
++      storeRoutes["checkout/create-session"].handler({ ...ctx, input: { recipient, items: cart, shippingRateId: "STANDARD" } } as never),
++    ).rejects.toMatchObject({ status: 403 });
++  });
++
++  it("rejects when the store isn't configured", async () => {
++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({}));
++    const ctx = makeCtx({ settings: { printfulApiKey: "", stripeSecretKey: "", siteOrigin: "https://everybittexas.com" } });
++    await expect(
++      storeRoutes["checkout/create-session"].handler({ ...ctx, input: { recipient, items: cart, shippingRateId: "STANDARD" } } as never),
++    ).rejects.toMatchObject({ status: 400 });
++  });
++
++  it("rejects an unknown shippingRateId", async () => {
++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({}));
++    const ctx = makeCtx({ settings: configuredSettings });
++    await expect(
++      storeRoutes["checkout/create-session"].handler({ ...ctx, input: { recipient, items: cart, shippingRateId: "NOPE" } } as never),
++    ).rejects.toMatchObject({ status: 400 });
++  });
++
++  it("returns a clean 400 (not a raw PrintfulApiError) for an unknown/deleted syncProductId", async () => {
++    mockGlobalFetch(
++      (url) => {
++        if (url.includes("/store/products/")) return new Response(JSON.stringify({ code: 404, error: { message: "Not found" } }), { status: 404 });
++        return new Response(JSON.stringify({ error: "unmocked printful url: " + url }), { status: 500 });
++      },
++      stripeDispatcher({}),
++    );
++    const ctx = makeCtx({ settings: configuredSettings });
++    await expect(
++      storeRoutes["checkout/create-session"].handler({ ...ctx, input: { recipient, items: cart, shippingRateId: "STANDARD" } } as never),
++    ).rejects.toMatchObject({ status: 400 });
++  });
++
++  it("computes unit_amount server-side from Printful's retail_price, ignoring any client price, and returns { url }", async () => {
++    let captured = "";
++    mockGlobalFetch(
++      printfulDispatcher({ productOverrides: { retailPrice: "29.99" } }),
++      stripeDispatcher({ onCheckoutSessionCreate: (init) => { captured = String(init?.body); return new Response(JSON.stringify({ id: "cs_1", url: "https://checkout.stripe.com/cs_1" }), { status: 200 }); } }),
++    );
++    const ctx = makeCtx({ settings: configuredSettings });
++    // Client-supplied price/amount fields, if any were sent, must be ignored.
++    const maliciousItems = [{ syncProductId: 13, syncVariantId: 10, quantity: 2, retailPrice: "0.01" }];
++    const result = (await storeRoutes["checkout/create-session"].handler(
++      { ...ctx, input: { recipient, items: maliciousItems, shippingRateId: "STANDARD" } } as never,
++    )) as { url: string };
++    expect(result.url).toBe("https://checkout.stripe.com/cs_1");
++    // 29.99 * 100 = 2999, quantity from cart is on the line item, not baked into unit_amount.
++    expect(captured).toContain("line_items%5B0%5D%5Bprice_data%5D%5Bunit_amount%5D=2999");
++    expect(captured).toContain("line_items%5B0%5D%5Bquantity%5D=2");
++    // Shipping line item amount comes from the matched Printful rate (5.00 -> 500), not the client.
++    expect(captured).toContain("line_items%5B1%5D%5Bprice_data%5D%5Bunit_amount%5D=500");
++  });
++});
++
++describe("checkout/confirm", () => {
++  it("rejects an unpaid session", async () => {
++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({ session: { id: "cs_unpaid", payment_status: "unpaid", amount_total: 3499, currency: "usd", metadata: {}, customer_details: null } }));
++    const ctx = makeCtx({ settings: configuredSettings });
++    await expect(
++      storeRoutes["checkout/confirm"].handler({ ...ctx, input: { sessionId: "cs_unpaid" } } as never),
++    ).rejects.toMatchObject({ status: 400 });
++  });
++
++  it("on a paid session, calls createPrintfulOrder and stores a fulfilled OrderRecord; a second call is idempotent and does not re-hit Printful order creation", async () => {
++    const orderCallCounter = { count: 0 };
++    const metadata = { source: "ebt-store", cart: JSON.stringify(cart), shippingRateId: "STANDARD", recipient: JSON.stringify(recipient) };
++    mockGlobalFetch(
++      printfulDispatcher({ orderCallCounter }),
++      stripeDispatcher({ session: { id: "cs_paid", payment_status: "paid", amount_total: 6498, currency: "usd", metadata, customer_details: { email: "jo@x.test" } } }),
++    );
++    const ctx = makeCtx({ settings: configuredSettings });
++
++    const first = (await storeRoutes["checkout/confirm"].handler({ ...ctx, input: { sessionId: "cs_paid" } } as never)) as { status: string; order: OrderRecord };
++    expect(first.status).toBe("fulfilled");
++    expect(first.order.printfulOrderId).toBe(555);
++    expect(first.order.lastError).toBeNull();
++    expect(orderCallCounter.count).toBe(1);
++
++    const second = (await storeRoutes["checkout/confirm"].handler({ ...ctx, input: { sessionId: "cs_paid" } } as never)) as { status: string; order: OrderRecord };
++    expect(second.status).toBe("already");
++    expect(orderCallCounter.count).toBe(1); // no re-hit of Printful order creation
++  });
++
++  it("on a Printful failure, stores a failed OrderRecord with lastError set and does not throw", async () => {
++    const metadata = { source: "ebt-store", cart: JSON.stringify(cart), shippingRateId: "STANDARD", recipient: JSON.stringify(recipient) };
++    mockGlobalFetch(
++      printfulDispatcher({ onOrderCreate: () => new Response(JSON.stringify({ error: "Out of stock" }), { status: 400 }) }),
++      stripeDispatcher({ session: { id: "cs_fail", payment_status: "paid", amount_total: 6498, currency: "usd", metadata, customer_details: { email: "jo@x.test" } } }),
++    );
++    const ctx = makeCtx({ settings: configuredSettings });
++
++    const result = (await storeRoutes["checkout/confirm"].handler({ ...ctx, input: { sessionId: "cs_fail" } } as never)) as { status: string; order: OrderRecord };
++    expect(result.status).toBe("failed");
++    expect(result.order.printfulOrderId).toBeNull();
++    expect(result.order.lastError).toBeTruthy();
++  });
++
++  it("rejects an unrecognized session (missing/unparseable metadata)", async () => {
++    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({ session: { id: "cs_bad", payment_status: "paid", amount_total: 100, currency: "usd", metadata: {}, customer_details: null } }));
++    const ctx = makeCtx({ settings: configuredSettings });
++    await expect(
++      storeRoutes["checkout/confirm"].handler({ ...ctx, input: { sessionId: "cs_bad" } } as never),
++    ).rejects.toMatchObject({ status: 400 });
++  });
++});
