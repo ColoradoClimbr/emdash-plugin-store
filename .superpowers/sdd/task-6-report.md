@@ -113,3 +113,41 @@ See commit SHA in the final status line of the task response (this report
 was written and `git add -f`'d alongside the implementation files in the
 same commit per the brief's Step 8, plus this report file added with
 `git add -f`).
+
+## Post-review fix: unproven error isolation in orders/reconcile (2026-07-23)
+
+**Finding:** The task review flagged that `orders/reconcile`'s per-session
+try/catch (the loop in `src/routes/orders.ts` that pushes
+`{ sessionId, status: "error" }` on a throw and continues) is a named
+safety requirement in the brief, but the existing reconcile tests only ever
+drove sessions through the resolve-without-throwing paths (fulfilled,
+already-processed, filtered-out by source). Nothing exercised the throw
+branch, so the isolation guarantee was correct by inspection but unproven
+by test.
+
+**Fix:** Added one test to the `orders/reconcile` describe block in
+`tests/orders.test.ts`: a batch of two `"ebt-store"` sessions where
+`cs_bad`'s individual `checkout/sessions/cs_bad` GET returns HTTP 500 (so
+`getCheckoutSession` throws a `StripeApiError` inside
+`fulfillCheckoutSession`, uncaught by that function, reaching the route's
+per-session try/catch), while `cs_existing` is pre-seeded in storage so it
+resolves via the `"already"` short-circuit without any further Stripe call.
+The route's `src/routes/orders.ts` handler was read again and left
+untouched — the try/catch was confirmed correct by inspection, matching
+the original review's finding.
+
+The test asserts:
+1. The `handler(...)` call itself resolves (not wrapped in
+   `expect(...).rejects`) — a throw here fails the test outright.
+2. `results.find(r => r.sessionId === "cs_bad").status === "error"`.
+3. `results.find(r => r.sessionId === "cs_existing").status === "already"`
+   — proving the loop actually continued past the failure rather than the
+   batch merely not crashing for an unrelated reason.
+
+**Evidence:**
+- `pnpm test -- orders` — 38 passed (6 test files), including the new case.
+- `pnpm test` (full suite) — 38 passed, up from 37 before this fix, no
+  regressions.
+- `pnpm run typecheck` — clean.
+
+Test-only change; `src/routes/orders.ts` was not modified.

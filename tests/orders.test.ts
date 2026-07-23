@@ -154,6 +154,49 @@ describe("orders/reconcile", () => {
     expect(existingResult?.status).toBe("already");
   });
 
+  it("isolates a session whose fulfillment throws — the batch completes and the sibling session still gets its own result", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes("api.stripe.com")) {
+        // The per-session lookup for cs_bad fails (e.g. Stripe outage or
+        // revoked key mid-batch) — fulfillCheckoutSession should throw here,
+        // not the batch-list call above it.
+        if (u.includes("/checkout/sessions/cs_bad")) {
+          return Promise.resolve(new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500 }));
+        }
+        if (u.includes("/checkout/sessions?")) {
+          return Promise.resolve(new Response(JSON.stringify({
+            data: [
+              { id: "cs_bad", payment_status: "paid", metadata: { source: "ebt-store" } },
+              { id: "cs_existing", payment_status: "paid", metadata: { source: "ebt-store" } },
+            ],
+            has_more: false,
+          }), { status: 200 }));
+        }
+      }
+      return Promise.resolve(new Response(JSON.stringify({ error: "unmocked url: " + u }), { status: 500 }));
+    });
+    const ctx = makeCtx({ settings: configuredSettings });
+    await ctx.storage.orders.put("cs_existing", makeOrder({ sessionId: "cs_existing", status: "fulfilled" }));
+
+    // Not wrapped in expect(...).rejects — a throw here would fail the test,
+    // proving the per-session try/catch in the route absorbed cs_bad's
+    // failure instead of aborting the whole reconcile call.
+    const result = (await ordersRoutes["orders/reconcile"].handler({ ...ctx, input: {} } as never)) as {
+      checked: number; results: Array<{ sessionId: string; status: string }>;
+    };
+
+    expect(result.checked).toBe(2);
+    const badResult = result.results.find((r) => r.sessionId === "cs_bad");
+    expect(badResult?.status).toBe("error");
+
+    // The sibling session's own result must still be present and correct —
+    // proving the loop actually continued past cs_bad rather than the whole
+    // batch just failing to crash for some unrelated reason.
+    const existingResult = result.results.find((r) => r.sessionId === "cs_existing");
+    expect(existingResult?.status).toBe("already");
+  });
+
   it("rejects when the store isn't configured", async () => {
     const ctx = makeCtx({ settings: { printfulApiKey: "", stripeSecretKey: "", siteOrigin: "https://everybittexas.com" } });
     await expect(
