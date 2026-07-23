@@ -2,6 +2,7 @@
   "name": "emdash-plugin-store",
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@11.9.0",
   "exports": {
     ".": "./src/index.ts",
     "./sandbox": "./src/sandbox-entry.ts",
