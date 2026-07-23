@@ -51,6 +51,7 @@ export async function createCheckoutSession(
   const body = new URLSearchParams();
   body.set("mode", "payment");
   body.set("customer", params.customerId);
+  body.set("automatic_tax[enabled]", "true");
   body.set("success_url", `${settings.siteOrigin}/store/success?session_id={CHECKOUT_SESSION_ID}`);
   body.set("cancel_url", `${settings.siteOrigin}/store/cart?cancelled=1`);
   params.lineItems.forEach((item, i) => {
