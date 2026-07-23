@@ -23,12 +23,18 @@ export function collection<T>() {
   };
 }
 
-export function makeCtx(overrides: { settings?: Record<string, unknown> } = {}) {
+export function makeCtx(overrides: { settings?: Record<string, unknown>; origin?: string | null } = {}) {
   const kv = new Map<string, unknown>();
   for (const [k, v] of Object.entries(overrides.settings ?? {})) {
     kv.set(`settings:${k}`, v);
   }
   const orders = collection<OrderRecord>();
+  // Defaults to the plugin's own DEFAULT_SETTINGS.siteOrigin so tests that
+  // don't care about origin validation don't have to think about it.
+  const origin = overrides.origin === undefined ? "https://example.com" : overrides.origin;
+  const requestHeaders = new Headers();
+  if (origin) requestHeaders.set("Origin", origin);
+  const request = new Request("https://example.com/_emdash/plugins/ebt-store/route", { headers: requestHeaders });
   return {
     plugin: { id: "ebt-store", version: "0.1.0" },
     storage: { orders },
@@ -48,6 +54,7 @@ export function makeCtx(overrides: { settings?: Record<string, unknown> } = {}) 
     log: { info: () => {}, error: () => {}, warn: () => {} },
     site: { origin: "https://example.com" },
     url: (path: string) => path,
+    request,
   };
 }
 
