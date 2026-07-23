@@ -87,6 +87,82 @@ async function resolveCartProducts(
   return resolved;
 }
 
+// Shared by checkout/confirm (the primary fulfillment path, called right
+// after the Stripe redirect) and orders/reconcile (the manual backstop for
+// sessions whose browser died before that redirect happened). Assumes the
+// caller has already validated settings are configured — callers that skip
+// that check (like reconcile, which checks once before its whole batch)
+// still get correct behavior since nothing here re-derives the check.
+export async function fulfillCheckoutSession(
+  ctx: RouteContext, settings: Awaited<ReturnType<typeof getSettings>>, sessionId: string,
+): Promise<{ status: "already" | OrderStatus; order: OrderRecord }> {
+  // Idempotency: a client retry, double-call, or a reconcile pass revisiting
+  // an already-confirmed session must not double-charge Printful.
+  const existing = (await ctx.storage.orders.get(sessionId)) as OrderRecord | null;
+  if (existing) return { status: "already", order: existing };
+
+  const session = await getCheckoutSession(ctx, settings, sessionId);
+  if (session.payment_status !== "paid") throw PluginRouteError.badRequest("This payment hasn't completed.");
+
+  let cart: CartItem[];
+  let recipient: RecipientAddress;
+  let shippingRateId: string;
+  try {
+    cart = JSON.parse(session.metadata.cart);
+    recipient = JSON.parse(session.metadata.recipient);
+    shippingRateId = session.metadata.shippingRateId;
+    if (!Array.isArray(cart) || cart.length === 0 || !recipient || !shippingRateId) throw new Error("missing metadata");
+  } catch {
+    throw PluginRouteError.badRequest("Unrecognized checkout session.");
+  }
+
+  // Printful order creation (and re-deriving its line items) is wrapped
+  // together: the customer already paid, so any failure here — including
+  // a product/variant that vanished from Printful since checkout — must
+  // be stored as a failed order for manual retry, never thrown as a 500
+  // that would strand a paid order with no record at all.
+  let status: OrderStatus;
+  let printfulOrderId: number | null = null;
+  let lastError: string | null = null;
+  try {
+    const cache = new Map<number, SyncProduct>();
+    const resolved = await resolveCartProducts(ctx, settings, cart, cache);
+    const orderItems = resolved.map(({ variant, item }) => ({
+      syncVariantId: item.syncVariantId, quantity: item.quantity, retailPrice: variant.retailPrice,
+    }));
+    const result = await createPrintfulOrder(ctx, settings, {
+      externalId: sessionId,
+      recipient,
+      items: orderItems,
+      shippingRateId,
+      confirm: true,
+    });
+    status = "fulfilled";
+    printfulOrderId = result.id;
+  } catch (err) {
+    status = "failed";
+    lastError = String(err);
+  }
+
+  const now = new Date().toISOString();
+  const record: OrderRecord = {
+    sessionId,
+    status,
+    amountCents: session.amount_total,
+    currency: session.currency,
+    email: session.customer_details?.email ?? "",
+    cart,
+    shippingRateId,
+    recipient,
+    printfulOrderId,
+    lastError,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await ctx.storage.orders.put(sessionId, record as unknown as Record<string, unknown>);
+  return { status: record.status, order: record };
+}
+
 export const storeRoutes = {
   "products/list": {
     public: true,
@@ -183,75 +259,12 @@ export const storeRoutes = {
       const sessionId = String(body.sessionId ?? "").trim();
       if (!sessionId) throw PluginRouteError.badRequest("sessionId is required.");
 
-      // Idempotency: a client retry or double-call must not double-charge Printful.
-      const existing = (await ctx.storage.orders.get(sessionId)) as OrderRecord | null;
-      if (existing) return { status: "already", order: existing };
-
       const settings = await getSettings(ctx);
       if (!settings.printfulApiKey || !settings.stripeSecretKey) {
         throw PluginRouteError.badRequest("Store isn't configured yet.");
       }
 
-      const session = await getCheckoutSession(ctx, settings, sessionId);
-      if (session.payment_status !== "paid") throw PluginRouteError.badRequest("This payment hasn't completed.");
-
-      let cart: CartItem[];
-      let recipient: RecipientAddress;
-      let shippingRateId: string;
-      try {
-        cart = JSON.parse(session.metadata.cart);
-        recipient = JSON.parse(session.metadata.recipient);
-        shippingRateId = session.metadata.shippingRateId;
-        if (!Array.isArray(cart) || cart.length === 0 || !recipient || !shippingRateId) throw new Error("missing metadata");
-      } catch {
-        throw PluginRouteError.badRequest("Unrecognized checkout session.");
-      }
-
-      // Printful order creation (and re-deriving its line items) is wrapped
-      // together: the customer already paid, so any failure here — including
-      // a product/variant that vanished from Printful since checkout — must
-      // be stored as a failed order for manual retry, never thrown as a 500
-      // that would strand a paid order with no record at all.
-      let status: OrderStatus;
-      let printfulOrderId: number | null = null;
-      let lastError: string | null = null;
-      try {
-        const cache = new Map<number, SyncProduct>();
-        const resolved = await resolveCartProducts(ctx, settings, cart, cache);
-        const orderItems = resolved.map(({ variant, item }) => ({
-          syncVariantId: item.syncVariantId, quantity: item.quantity, retailPrice: variant.retailPrice,
-        }));
-        const result = await createPrintfulOrder(ctx, settings, {
-          externalId: sessionId,
-          recipient,
-          items: orderItems,
-          shippingRateId,
-          confirm: true,
-        });
-        status = "fulfilled";
-        printfulOrderId = result.id;
-      } catch (err) {
-        status = "failed";
-        lastError = String(err);
-      }
-
-      const now = new Date().toISOString();
-      const record: OrderRecord = {
-        sessionId,
-        status,
-        amountCents: session.amount_total,
-        currency: session.currency,
-        email: session.customer_details?.email ?? "",
-        cart,
-        shippingRateId,
-        recipient,
-        printfulOrderId,
-        lastError,
-        createdAt: now,
-        updatedAt: now,
-      };
-      await ctx.storage.orders.put(sessionId, record as unknown as Record<string, unknown>);
-      return { status: record.status, order: record };
+      return fulfillCheckoutSession(ctx, settings, sessionId);
     },
   },
 };
