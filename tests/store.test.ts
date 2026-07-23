@@ -234,6 +234,30 @@ describe("checkout/confirm", () => {
     expect(result.order.lastError).toBeTruthy();
   });
 
+  it("retries a previously-failed order on reconfirm: re-hits Printful, becomes fulfilled, and preserves the original createdAt while updatedAt advances", async () => {
+    const orderCallCounter = { count: 0 };
+    const metadata = { source: "ebt-store", cart: JSON.stringify(cart), shippingRateId: "STANDARD", recipient: JSON.stringify(recipient) };
+    mockGlobalFetch(
+      printfulDispatcher({ orderCallCounter }),
+      stripeDispatcher({ session: { id: "cs_retry", payment_status: "paid", amount_total: 6498, currency: "usd", metadata, customer_details: { email: "jo@x.test" } } }),
+    );
+    const ctx = makeCtx({ settings: configuredSettings });
+    const originalCreatedAt = "2020-01-01T00:00:00.000Z";
+    const failedRecord: OrderRecord = {
+      sessionId: "cs_retry", status: "failed", amountCents: 6498, currency: "usd", email: "jo@x.test",
+      cart, shippingRateId: "STANDARD", recipient, printfulOrderId: null, lastError: "Out of stock",
+      createdAt: originalCreatedAt, updatedAt: originalCreatedAt,
+    };
+    await ctx.storage.orders.put("cs_retry", failedRecord);
+
+    const result = (await storeRoutes["checkout/confirm"].handler({ ...ctx, input: { sessionId: "cs_retry" } } as never)) as { status: string; order: OrderRecord };
+    expect(orderCallCounter.count).toBe(1); // createPrintfulOrder was actually retried
+    expect(result.status).toBe("fulfilled");
+    expect(result.order.printfulOrderId).toBe(555);
+    expect(result.order.createdAt).toBe(originalCreatedAt); // preserved from the original failed record
+    expect(result.order.updatedAt).not.toBe(originalCreatedAt); // advanced to this retry's time
+  });
+
   it("rejects an unrecognized session (missing/unparseable metadata)", async () => {
     mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({ session: { id: "cs_bad", payment_status: "paid", amount_total: 100, currency: "usd", metadata: {}, customer_details: null } }));
     const ctx = makeCtx({ settings: configuredSettings });
