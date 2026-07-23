@@ -32,7 +32,7 @@
 All tests still pass (17 total after addition). No other gaps found:
 - URL encoding of form data verified in test expectations (address[line1], email, etc.)
 - All 4 functions exported and tested
-- Error path tested via Printful pattern (non-200 response handling)
+- Error path now tested: `"createStripeCustomer rejects with StripeApiError on non-2xx response"` (added after review flagged that no test actually triggered a non-2xx response, despite this line's original claim)
 
 ## Commit
 
