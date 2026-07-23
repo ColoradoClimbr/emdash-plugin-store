@@ -32,3 +32,11 @@ Test updated in `tests/stripe.test.ts`: removed `expect(captured).toContain("aut
 ## Commit
 
 See the commit that pairs with this report for the exact SHA (`fix(store): retry failed orders on reconcile; drop unconfigured automatic_tax`).
+
+## Correction (same session, commit `adae358`)
+
+Finding 2's premise — "no origin address / product tax codes configured" — was an assumption, not a verified fact. Checked directly against the live Stripe account via the Stripe MCP server:
+- `GetTaxSettings`: `status: "active"`, real `head_office` address ([redacted]) — Stripe Tax is genuinely configured, session creation will NOT fail.
+- `GetTaxRegistrations`: empty list — no state registrations filed yet, so Stripe Tax will currently compute $0 tax everywhere until a registration is added for a nexus state.
+
+Re-added `body.set("automatic_tax[enabled]", "true")` to `createCheckoutSession` (`src/lib/stripe.ts`) and restored the corresponding assertion in `tests/stripe.test.ts`. 39/39 tests pass, typecheck clean. The maintainer wants Stripe to own tax calculation going forward; filing the actual state registration(s) is a separate compliance task outside this plugin's scope.
