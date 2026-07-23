@@ -31,6 +31,7 @@ describe("stripe client", () => {
     });
     expect(session).toEqual({ id: "cs_1", url: "https://checkout.stripe.com/cs_1" });
     expect(captured).toContain("customer=cus_1");
+    expect(captured).toContain("automatic_tax%5Benabled%5D=true");
     expect(captured).toContain("line_items%5B0%5D%5Bprice_data%5D%5Bunit_amount%5D=2999");
     expect(captured).toContain("line_items%5B1%5D%5Bprice_data%5D%5Bunit_amount%5D=500");
     expect(captured).toContain("metadata%5Bsource%5D=ebt-store");
