@@ -68,3 +68,17 @@ Stripe Checkout Session id, per the precedent in
 ```
 835d50c feat(store): add storefront routes (products, shipping, checkout, confirm)
 ```
+
+## Fix: clean 400 for unknown product in `checkout/create-session` (review follow-up)
+
+**Finding:** In `resolveCartProducts`, an unknown/deleted `syncProductId` let `getSyncProduct`'s raw `PrintfulApiError` (on a Printful 404) escape uncaught, surfacing as a generic 500 from `checkout/create-session` instead of `PluginRouteError.badRequest`. The variant-not-found half of the same function already wrapped correctly; only the product-fetch half was missing it.
+
+**Fix:** Wrapped the `getSyncProduct(...)` call inside `resolveCartProducts`'s loop in a try/catch that rethrows `PluginRouteError.badRequest(\`Product ${item.syncProductId} not found.\`)`, mirroring the existing `Variant ${item.syncVariantId} not found.` convention right below it. Fixed in the shared function (root cause, one call site) rather than duplicating a guard at each caller — safe for `checkout/confirm` too, since `confirm` already wraps its entire `resolveCartProducts` call in a try/catch that catches any error type and records it as a `failed` `OrderRecord` (`status`/idempotency semantics unchanged; only the stored `lastError` message text now reads more cleanly).
+
+**TDD evidence:**
+- Added `checkout/create-session` › "returns a clean 400 (not a raw PrintfulApiError) for an unknown/deleted syncProductId" to `tests/store.test.ts`, mocking `/store/products/:id` as a 404.
+- `pnpm exec vitest run tests/store.test.ts`: `Test Files 1 passed (1)`, `Tests 14 passed (14)` (13 → 14).
+- `pnpm test` (full suite): `Test Files 5 passed (5)`, `Tests 32 passed (32)` (31 → 32, no regressions).
+- `pnpm exec tsc --noEmit`: clean, no output.
+
+Commit: `fix(store): return clean 400 for unknown product in checkout/create-session`

@@ -156,6 +156,20 @@ describe("checkout/create-session", () => {
     ).rejects.toMatchObject({ status: 400 });
   });
 
+  it("returns a clean 400 (not a raw PrintfulApiError) for an unknown/deleted syncProductId", async () => {
+    mockGlobalFetch(
+      (url) => {
+        if (url.includes("/store/products/")) return new Response(JSON.stringify({ code: 404, error: { message: "Not found" } }), { status: 404 });
+        return new Response(JSON.stringify({ error: "unmocked printful url: " + url }), { status: 500 });
+      },
+      stripeDispatcher({}),
+    );
+    const ctx = makeCtx({ settings: configuredSettings });
+    await expect(
+      storeRoutes["checkout/create-session"].handler({ ...ctx, input: { recipient, items: cart, shippingRateId: "STANDARD" } } as never),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
   it("computes unit_amount server-side from Printful's retail_price, ignoring any client price, and returns { url }", async () => {
     let captured = "";
     mockGlobalFetch(

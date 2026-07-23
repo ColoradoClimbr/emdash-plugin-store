@@ -73,7 +73,11 @@ async function resolveCartProducts(
   for (const item of items) {
     let product = cache.get(item.syncProductId);
     if (!product) {
-      product = await getSyncProduct(ctx, settings, item.syncProductId);
+      try {
+        product = await getSyncProduct(ctx, settings, item.syncProductId);
+      } catch {
+        throw PluginRouteError.badRequest(`Product ${item.syncProductId} not found.`);
+      }
       cache.set(item.syncProductId, product);
     }
     const variant = product.variants.find((v) => v.id === item.syncVariantId);
