@@ -3,6 +3,7 @@ import type { PluginContext } from "emdash";
 import { DEFAULT_SETTINGS } from "./types.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { storeRoutes } from "./routes/store.js";
+import { ordersRoutes } from "./routes/orders.js";
 
 export function createPlugin() {
   return definePlugin({
@@ -37,6 +38,7 @@ export function createPlugin() {
     routes: {
       ...settingsRoutes,
       ...storeRoutes,
+      ...ordersRoutes,
     },
   });
 }

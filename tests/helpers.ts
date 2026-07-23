@@ -10,15 +10,30 @@ export function collection<T>() {
     async put(id: string, data: T) {
       store.set(id, data);
     },
-    async query(opts?: { where?: Record<string, unknown>; limit?: number }) {
+    async query(opts?: { where?: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; limit?: number; cursor?: string }) {
       let items = Array.from(store.entries()).map(([id, data]) => ({ id, data }));
       if (opts?.where) {
         for (const [k, v] of Object.entries(opts.where)) {
           items = items.filter((i) => (i.data as Record<string, unknown>)[k] === v);
         }
       }
-      if (opts?.limit) items = items.slice(0, opts.limit);
-      return { items, hasMore: false };
+      const orderEntry = opts?.orderBy && Object.entries(opts.orderBy)[0];
+      if (orderEntry) {
+        const [field, dir] = orderEntry;
+        items = items.slice().sort((a, b) => {
+          const av = (a.data as Record<string, unknown>)[field];
+          const bv = (b.data as Record<string, unknown>)[field];
+          const cmp = av === bv ? 0 : (av as string) > (bv as string) ? 1 : -1;
+          return dir === "desc" ? -cmp : cmp;
+        });
+      }
+      // crewcut: cursor = index offset into the (already filtered/sorted)
+      // in-memory array — the brief calls this out as sufficient for tests.
+      const offset = opts?.cursor ? Number(opts.cursor) : 0;
+      const limit = opts?.limit ?? items.length;
+      const page = items.slice(offset, offset + limit);
+      const hasMore = offset + page.length < items.length;
+      return { items: page, cursor: hasMore ? String(offset + page.length) : undefined, hasMore };
     },
   };
 }
