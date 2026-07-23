@@ -97,9 +97,11 @@ export async function fulfillCheckoutSession(
   ctx: RouteContext, settings: Awaited<ReturnType<typeof getSettings>>, sessionId: string,
 ): Promise<{ status: "already" | OrderStatus; order: OrderRecord }> {
   // Idempotency: a client retry, double-call, or a reconcile pass revisiting
-  // an already-confirmed session must not double-charge Printful.
+  // an already-confirmed session must not double-charge Printful. A
+  // previously *failed* record is the one exception — it falls through to
+  // re-attempt fulfillment below, since nothing succeeded the first time.
   const existing = (await ctx.storage.orders.get(sessionId)) as OrderRecord | null;
-  if (existing) return { status: "already", order: existing };
+  if (existing && existing.status !== "failed") return { status: "already", order: existing };
 
   const session = await getCheckoutSession(ctx, settings, sessionId);
   if (session.payment_status !== "paid") throw PluginRouteError.badRequest("This payment hasn't completed.");
@@ -156,7 +158,9 @@ export async function fulfillCheckoutSession(
     recipient,
     printfulOrderId,
     lastError,
-    createdAt: now,
+    // A retry of a previously-failed order keeps its original createdAt;
+    // updatedAt always reflects this attempt.
+    createdAt: existing?.status === "failed" ? existing.createdAt : now,
     updatedAt: now,
   };
   await ctx.storage.orders.put(sessionId, record as unknown as Record<string, unknown>);
