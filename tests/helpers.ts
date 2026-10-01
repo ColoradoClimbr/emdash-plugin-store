@@ -3,12 +3,25 @@ import type { OrderRecord } from "../src/types.js";
 
 export function collection<T>() {
   const store = new Map<string, T>();
+  const revs = new Map<string, number>();
   return {
     async get(id: string) {
       return store.has(id) ? (store.get(id) as T) : null;
     },
     async put(id: string, data: T) {
       store.set(id, data);
+      revs.set(id, (revs.get(id) ?? 0) + 1);
+    },
+    async getVersioned(id: string) {
+      return store.has(id) ? { value: store.get(id) as T, revision: String(revs.get(id) ?? 0) } : null;
+    },
+    // Host contract: a null expected revision creates only when absent.
+    async compareAndSet(id: string, expected: string | null, data: T) {
+      const current = store.has(id) ? String(revs.get(id) ?? 0) : null;
+      if (current !== expected) return { applied: false as const };
+      store.set(id, data);
+      revs.set(id, (revs.get(id) ?? 0) + 1);
+      return { applied: true as const, revision: String(revs.get(id)) };
     },
     async query(opts?: { where?: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; limit?: number; cursor?: string }) {
       let items = Array.from(store.entries()).map(([id, data]) => ({ id, data }));

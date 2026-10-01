@@ -7,6 +7,7 @@ const FIELDS: { key: string; label: string; type?: string }[] = [
   { key: "printfulApiKey", label: "Printful Private API Token", type: "password" },
   { key: "printfulStoreId", label: "Printful Store ID (only if using an account-level token)" },
   { key: "stripeSecretKey", label: "Stripe Secret Key", type: "password" },
+  { key: "stripeWebhookSecret", label: "Stripe Webhook Signing Secret (whsec_...) — endpoint /_emdash/api/plugins/ebt-store/checkout/webhook, events checkout.session.completed + checkout.session.async_payment_succeeded", type: "password" },
   { key: "siteOrigin", label: "Site Origin (e.g. https://example.com)" },
 ];
 

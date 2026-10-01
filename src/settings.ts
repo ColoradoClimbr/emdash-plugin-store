@@ -2,7 +2,7 @@ import type { PluginContext } from "emdash";
 import { DEFAULT_SETTINGS, type PluginSettings } from "./types.js";
 
 export const MASK = "••••••••";
-export const SECRET_KEYS: (keyof PluginSettings)[] = ["printfulApiKey", "stripeSecretKey"];
+export const SECRET_KEYS: (keyof PluginSettings)[] = ["printfulApiKey", "stripeSecretKey", "stripeWebhookSecret"];
 
 export async function getSettings(ctx: PluginContext): Promise<PluginSettings> {
   const settings = { ...DEFAULT_SETTINGS };

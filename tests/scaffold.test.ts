@@ -5,7 +5,7 @@ import { makeCtx } from "./helpers.js";
 describe("scaffold", () => {
   it("DEFAULT_SETTINGS has all required keys", () => {
     expect(Object.keys(DEFAULT_SETTINGS).sort()).toEqual(
-      ["printfulApiKey", "printfulStoreId", "siteOrigin", "stripeSecretKey"].sort(),
+      ["printfulApiKey", "printfulStoreId", "siteOrigin", "stripeSecretKey", "stripeWebhookSecret"].sort(),
     );
   });
 

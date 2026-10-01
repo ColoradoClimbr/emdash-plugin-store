@@ -266,3 +266,48 @@ describe("checkout/confirm", () => {
     ).rejects.toMatchObject({ status: 400 });
   });
 });
+
+async function signStripe(body: string, secret: string, t = Math.floor(Date.now() / 1000)): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${t}.${body}`));
+  return `t=${t},v1=${[...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+describe("fulfillment claim + webhook", () => {
+  const metadata = { source: "ebt-store", cart: JSON.stringify(cart), shippingRateId: "STANDARD", recipient: JSON.stringify(recipient) };
+  const paidSession = { id: "cs_race", payment_status: "paid", amount_total: 6498, currency: "usd", metadata, customer_details: { email: "jo@x.test" } };
+
+  it("creates exactly one Printful order when confirm calls race", async () => {
+    const orderCallCounter = { count: 0 };
+    mockGlobalFetch(printfulDispatcher({ orderCallCounter }), stripeDispatcher({ session: paidSession }));
+    const ctx = makeCtx({ settings: configuredSettings });
+    const results = (await Promise.all(
+      [1, 2, 3].map(() => storeRoutes["checkout/confirm"].handler({ ...ctx, input: { sessionId: "cs_race" } } as never)),
+    )) as Array<{ status: string }>;
+    expect(orderCallCounter.count).toBe(1);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+  });
+
+  async function webhookCtx(event: unknown, secret = "whsec_t", signWith = "whsec_t") {
+    const raw = JSON.stringify(event);
+    const ctx = makeCtx({ settings: { ...configuredSettings, stripeWebhookSecret: secret } });
+    const request = new Request("https://example.com/hook", { method: "POST", headers: { "stripe-signature": await signStripe(raw, signWith) } });
+    return { ...ctx, request, input: raw };
+  }
+  const completed = { type: "checkout.session.completed", data: { object: { id: "cs_race", metadata: { source: "ebt-store" } } } };
+
+  it("webhook fulfills a verified checkout.session.completed", async () => {
+    const orderCallCounter = { count: 0 };
+    mockGlobalFetch(printfulDispatcher({ orderCallCounter }), stripeDispatcher({ session: paidSession }));
+    const res = (await storeRoutes["checkout/webhook"].handler((await webhookCtx(completed)) as never)) as { status: string };
+    expect(res.status).toBe("fulfilled");
+    expect(orderCallCounter.count).toBe(1);
+  });
+
+  it("webhook rejects a bad signature and ignores other plugins' sessions", async () => {
+    mockGlobalFetch(printfulDispatcher({}), stripeDispatcher({ session: paidSession }));
+    await expect(storeRoutes["checkout/webhook"].handler((await webhookCtx(completed, "whsec_t", "whsec_wrong")) as never)).rejects.toMatchObject({ status: 400 });
+    const foreign = { type: "checkout.session.completed", data: { object: { id: "cs_x", metadata: { petitionId: "p1" } } } };
+    expect(await storeRoutes["checkout/webhook"].handler((await webhookCtx(foreign)) as never)).toMatchObject({ ignored: true });
+  });
+});
