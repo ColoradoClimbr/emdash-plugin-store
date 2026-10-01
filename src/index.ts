@@ -5,10 +5,10 @@ export { createPlugin } from "./sandbox-entry.js";
 export function storePlugin(): PluginDescriptor {
   return {
     id: "ebt-store",
-    version: "0.1.0",
+    version: "0.2.0",
     entrypoint: "emdash-plugin-store",
     options: {},
-    capabilities: ["network:request", "email:send"],
+    capabilities: ["network:request"],
     allowedHosts: ["api.printful.com", "api.stripe.com"],
     storage: {
       orders: {

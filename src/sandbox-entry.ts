@@ -8,8 +8,8 @@ import { ordersRoutes } from "./routes/orders.js";
 export function createPlugin() {
   return definePlugin({
     id: "ebt-store",
-    version: "0.1.0",
-    capabilities: ["network:request", "email:send"],
+    version: "0.2.0",
+    capabilities: ["network:request"],
     allowedHosts: ["api.printful.com", "api.stripe.com"],
     storage: {
       orders: {

@@ -4,6 +4,7 @@ import type { CartItem, OrderRecord, OrderStatus, RecipientAddress } from "../ty
 import { getSettings } from "../settings.js";
 import { createPrintfulOrder, getShippingRates, getSyncProduct, listSyncProducts } from "../lib/printful.js";
 import { createCheckoutSession, createStripeCustomer, getCheckoutSession } from "../lib/stripe.js";
+import { verifyStripeSignature } from "../lib/stripeWebhook.js";
 
 const MAX_ITEMS = 50;
 const MAX_QTY = 20;
@@ -12,6 +13,9 @@ const MAX_QTY = 20;
 // of stock string Printful might return — brief calls for rejecting anything
 // that isn't exactly this, not guessing at the full enum.
 const AVAILABLE_STATUS = "active";
+// A claimed-but-unfinished order older than this is presumed dead (worker killed
+// mid-fulfillment) and may be re-claimed.
+const STALE_CLAIM_MS = 5 * 60 * 1000;
 
 type SyncProduct = Awaited<ReturnType<typeof getSyncProduct>>;
 
@@ -100,8 +104,11 @@ export async function fulfillCheckoutSession(
   // an already-confirmed session must not double-charge Printful. A
   // previously *failed* record is the one exception — it falls through to
   // re-attempt fulfillment below, since nothing succeeded the first time.
-  const existing = (await ctx.storage.orders.get(sessionId)) as OrderRecord | null;
-  if (existing && existing.status !== "failed") return { status: "already", order: existing };
+  const versioned = await ctx.storage.orders.getVersioned(sessionId);
+  const existing = (versioned?.value ?? null) as OrderRecord | null;
+  const staleClaim =
+    existing?.status === "paid_unfulfilled" && Date.now() - Date.parse(existing.updatedAt) > STALE_CLAIM_MS;
+  if (existing && existing.status !== "failed" && !staleClaim) return { status: "already", order: existing };
 
   const session = await getCheckoutSession(ctx, settings, sessionId);
   if (session.payment_status !== "paid") throw PluginRouteError.badRequest("This payment hasn't completed.");
@@ -116,6 +123,34 @@ export async function fulfillCheckoutSession(
     if (!Array.isArray(cart) || cart.length === 0 || !recipient || !shippingRateId) throw new Error("missing metadata");
   } catch {
     throw PluginRouteError.badRequest("Unrecognized checkout session.");
+  }
+
+  // Claim the order before calling Printful. checkout/confirm, the Stripe webhook
+  // and reconcile can all arrive for the same session at once; only the caller
+  // whose compare-and-set wins goes on to create the Printful order.
+  const claimedAt = new Date().toISOString();
+  const claimRecord: OrderRecord = {
+    sessionId,
+    status: "paid_unfulfilled",
+    amountCents: session.amount_total,
+    currency: session.currency,
+    email: session.customer_details?.email ?? "",
+    cart,
+    shippingRateId,
+    recipient,
+    printfulOrderId: null,
+    lastError: null,
+    createdAt: existing?.createdAt ?? claimedAt,
+    updatedAt: claimedAt,
+  };
+  const claim = await ctx.storage.orders.compareAndSet(
+    sessionId,
+    versioned?.revision ?? null,
+    claimRecord as unknown as Record<string, unknown>,
+  );
+  if (!claim.applied) {
+    const current = ((await ctx.storage.orders.get(sessionId)) as OrderRecord | null) ?? claimRecord;
+    return { status: "already", order: current };
   }
 
   // Printful order creation (and re-deriving its line items) is wrapped
@@ -170,6 +205,7 @@ export async function fulfillCheckoutSession(
 export const storeRoutes = {
   "products/list": {
     public: true,
+    cacheControl: "public, max-age=300",
     handler: async (ctx: RouteContext) => {
       const settings = await getSettings(ctx);
       const products = await listSyncProducts(ctx, settings);
@@ -179,6 +215,7 @@ export const storeRoutes = {
 
   "products/get": {
     public: true,
+    cacheControl: "public, max-age=300",
     handler: async (ctx: RouteContext) => {
       const body = (ctx.input ?? {}) as { syncProductId?: number };
       const syncProductId = Number(body.syncProductId);
@@ -269,6 +306,52 @@ export const storeRoutes = {
       }
 
       return fulfillCheckoutSession(ctx, settings, sessionId);
+    },
+  },
+
+  // Stripe webhook: the backstop for a browser that dies between payment and the
+  // success redirect. Only the session id is taken from the event; the session
+  // is re-fetched from Stripe by fulfillCheckoutSession.
+  "checkout/webhook": {
+    public: true,
+    methods: ["POST" as const],
+    request: { body: "text" as const, maxBytes: 256 * 1024, headers: ["stripe-signature"] },
+    handler: async (ctx: RouteContext) => {
+      const settings = await getSettings(ctx);
+      if (!settings.stripeWebhookSecret) throw PluginRouteError.badRequest("Webhook isn't configured.");
+      const raw = typeof ctx.input === "string" ? ctx.input : "";
+      const headers = ctx.request.headers as unknown as Headers | Record<string, string>;
+      const signature =
+        typeof (headers as Headers).get === "function"
+          ? (headers as Headers).get("stripe-signature")
+          : (headers as Record<string, string>)["stripe-signature"];
+      if (!(await verifyStripeSignature(raw, signature, settings.stripeWebhookSecret))) {
+        throw PluginRouteError.badRequest("Invalid signature.");
+      }
+      let event: { type?: string; data?: { object?: { id?: string; metadata?: Record<string, string> } } };
+      try {
+        event = JSON.parse(raw);
+      } catch {
+        throw PluginRouteError.badRequest("Invalid payload.");
+      }
+      if (event.type !== "checkout.session.completed" && event.type !== "checkout.session.async_payment_succeeded") {
+        return { received: true, ignored: true };
+      }
+      // The Stripe account is shared with other plugins (e.g. petition donations);
+      // never fulfill someone else's payment.
+      if (event.data?.object?.metadata?.source !== "ebt-store") return { received: true, ignored: true };
+      const sessionId = String(event.data?.object?.id ?? "");
+      if (!sessionId) throw PluginRouteError.badRequest("Missing session id.");
+      if (!settings.printfulApiKey || !settings.stripeSecretKey) throw PluginRouteError.badRequest("Store isn't configured yet.");
+      try {
+        const { status } = await fulfillCheckoutSession(ctx, settings, sessionId);
+        return { received: true, status };
+      } catch (err) {
+        // 4xx (unpaid, unrecognized session) are acknowledged so Stripe stops
+        // retrying; anything else rethrows so Stripe retries.
+        if (err instanceof PluginRouteError && err.status < 500) return { received: true, ignored: true };
+        throw err;
+      }
     },
   },
 };

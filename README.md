@@ -61,9 +61,14 @@ Configure via the **Store Settings** page in the Emdash admin panel. All values 
 | `POST /checkout/create-session` | Create a Stripe Checkout Session |
 | `POST /checkout/confirm` | Verify payment and create the Printful order |
 
-## Payment confirmation (no webhook)
+## Payment confirmation
 
-Emdash's plugin-route pipeline consumes the request body before any handler runs, so a real Stripe webhook signature check (which needs the raw body) isn't possible here. Instead, `checkout/confirm` is called by the client right after the Stripe success redirect and verifies payment by fetching the Checkout Session directly from Stripe — idempotent by session id, so a retry or double-call never double-charges Printful. `orders/reconcile` exists only as a manual backstop for the case a browser dies between payment and redirect.
+Two paths record a paid order, both idempotent by Checkout Session id and both claiming the order with a compare-and-set before calling Printful, so concurrent calls create exactly one Printful order:
+
+- `checkout/confirm` is called by the client right after the Stripe success redirect.
+- `checkout/webhook` is the backstop for a browser that dies between payment and redirect. Add a Stripe webhook endpoint at `/_emdash/api/plugins/ebt-store/checkout/webhook` for `checkout.session.completed` and `checkout.session.async_payment_succeeded`, then paste its `whsec_...` signing secret into the store settings. The signature (HMAC-SHA256 over the raw body, 5 minute tolerance) is verified, only the session id is read from the event, and the session is re-fetched from Stripe. Events for sessions without `metadata.source = ebt-store` are ignored.
+
+`orders/reconcile` remains as a manual backstop.
 
 ## Stripe Tax
 
@@ -71,7 +76,7 @@ Checkout Sessions are created with `automatic_tax` enabled. Stripe will only act
 
 ## Requirements
 
-- Emdash `>=0.16.0`
+- Emdash `>=0.39.0`
 - A Printful account with a store connected
 - A Stripe account with a secret key
 

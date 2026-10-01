@@ -44,6 +44,7 @@ export interface PluginSettings {
   printfulApiKey: string; // secret
   printfulStoreId: string;
   stripeSecretKey: string; // secret
+  stripeWebhookSecret: string; // secret; whsec_... of the Stripe webhook endpoint
   siteOrigin: string;
 }
 
@@ -51,5 +52,6 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   printfulApiKey: "",
   printfulStoreId: "",
   stripeSecretKey: "",
+  stripeWebhookSecret: "",
   siteOrigin: "https://everybittexas.com",
 };
