@@ -16,3 +16,15 @@ describe("getSettings", () => {
     expect(settings.printfulApiKey).toBe("pf_abc123");
   });
 });
+
+import { buildSettingsSchema } from "../src/secrets.js";
+import { SECRET_KEYS as STORE_SECRET_KEYS } from "../src/settings.js";
+import { DEFAULT_SETTINGS as STORE_DEFAULTS } from "../src/types.js";
+
+describe("secrets schema", () => {
+  it("marks exactly the secret keys as secret and covers every setting", () => {
+    const schema = buildSettingsSchema(STORE_DEFAULTS, STORE_SECRET_KEYS);
+    expect(Object.keys(schema).sort()).toEqual(Object.keys(STORE_DEFAULTS).sort());
+    expect(Object.entries(schema).filter(([, f]) => f.type === "secret").map(([k]) => k).sort()).toEqual([...STORE_SECRET_KEYS].sort());
+  });
+});
