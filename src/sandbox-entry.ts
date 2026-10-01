@@ -1,6 +1,8 @@
 import { definePlugin } from "emdash";
 import type { PluginContext } from "emdash";
 import { DEFAULT_SETTINGS } from "./types.js";
+import { SECRET_KEYS } from "./settings.js";
+import { buildSettingsSchema } from "./secrets.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { storeRoutes } from "./routes/store.js";
 import { ordersRoutes } from "./routes/orders.js";
@@ -23,6 +25,9 @@ export function createPlugin() {
         { path: "/orders", label: "Store Orders", icon: "cart" },
       ],
       widgets: [],
+      // Generated from DEFAULT_SETTINGS (no drift from Settings.tsx); marks secrets for
+      // at-rest encryption. Settings.tsx stays the only UI.
+      settingsSchema: buildSettingsSchema(DEFAULT_SETTINGS, SECRET_KEYS),
     },
     hooks: {
       "plugin:install": {
