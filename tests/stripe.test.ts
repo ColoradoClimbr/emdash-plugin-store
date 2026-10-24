@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { createStripeCustomer, createCheckoutSession, getCheckoutSession, listRecentPaidSessions, StripeApiError } from "../src/lib/stripe.js";
 import { makeCtx, mockFetch } from "./helpers.js";
 
-const settings = { printfulApiKey: "", printfulStoreId: "", stripeSecretKey: "sk_test", siteOrigin: "https://x.test" };
+const settings = { printfulApiKey: "", printfulStoreId: "", stripeSecretKey: "sk_test", stripeWebhookSecret: "", siteOrigin: "https://x.test" };
 const recipient = { name: "Jo", email: "jo@x.test", address1: "1 Main", city: "Austin", stateCode: "TX", countryCode: "US", zip: "78701" };
 
 describe("stripe client", () => {
