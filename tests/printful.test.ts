@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { listSyncProducts, getSyncProduct, getShippingRates, createPrintfulOrder, getPrintfulOrder, PrintfulApiError } from "../src/lib/printful.js";
 import { makeCtx, mockFetch } from "./helpers.js";
 
-const settings = { printfulApiKey: "pf_test", printfulStoreId: "", stripeSecretKey: "", siteOrigin: "https://x.test" };
+const settings = { printfulApiKey: "pf_test", printfulStoreId: "", stripeSecretKey: "", stripeWebhookSecret: "", siteOrigin: "https://x.test" };
 
 describe("printful client", () => {
   afterEach(() => { /* vi.restoreAllMocks() handled globally below */ });
